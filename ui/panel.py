@@ -37,11 +37,12 @@ class AISIDEBAR_PT_main_panel(Panel):
         # ---------------------------------------------------------------------
         launch_col = layout.column(align=True)
         launch_col.scale_y = 1.3
-        launch_col.operator("ai_sidebar.open_command_bar", text="✦ Command Bar (Alt+Space)", icon="CONSOLE")
+        launch_col.operator("ai_sidebar.open_web_ui", text="✦ Open Web UI (Modern)", icon="WINDOW")
 
         nav_row = launch_col.row(align=True)
         nav_row.scale_y = 0.9
-        nav_row.operator("ai_sidebar.open_conversation", text="Conversation View", icon="SCRIPT")
+        nav_row.operator("ai_sidebar.open_command_bar", text="Command Bar", icon="CONSOLE")
+        nav_row.operator("ai_sidebar.open_conversation", text="Drawer", icon="SCRIPT")
         if props.agent_status in ("PROCESSING", "EXECUTING_TOOL"):
             nav_row.operator("ai_sidebar.cancel_turn", text="Cancel", icon="CANCEL")
 

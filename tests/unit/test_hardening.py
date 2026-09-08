@@ -89,8 +89,11 @@ class TestRuntimeIsolationAndSecurity(unittest.TestCase):
         for folder in ["core", "agent", "tools", "adapter", "ui"]:
             files = self._get_python_files(folder)
             for file_path in files:
-                # In M2, agent/http_client.py is the designated HTTP transport module
-                is_http_client = file_path.replace("\\", "/").endswith("agent/http_client.py")
+                # Designated transport and launcher modules
+                norm_path = file_path.replace("\\", "/")
+                is_http_client = norm_path.endswith("agent/http_client.py")
+                is_web_server = norm_path.endswith("core/web_server.py")
+                is_web_launcher = norm_path.endswith("ui/web_launcher.py")
 
                 with open(file_path, "r", encoding="utf-8") as fh:
                     content = fh.read()
@@ -105,11 +108,14 @@ class TestRuntimeIsolationAndSecurity(unittest.TestCase):
                     elif isinstance(node, (ast.Import, ast.ImportFrom)):
                         mod = getattr(node, "module", None) or getattr(node, "names", [None])[0].name
                         base_mod = mod.split(".")[0]
-                        if not (is_http_client and base_mod in {"urllib", "http", "socket", "ssl"}):
-                            self.assertNotIn(
-                                base_mod, forbidden_modules,
-                                f"Forbidden module '{base_mod}' in {file_path}"
-                            )
+                        if (is_http_client or is_web_server) and base_mod in {"urllib", "http", "socket", "ssl", "socketserver"}:
+                            continue
+                        if is_web_launcher and base_mod in {"subprocess", "webbrowser"}:
+                            continue
+                        self.assertNotIn(
+                            base_mod, forbidden_modules,
+                            f"Forbidden module '{base_mod}' in {file_path}"
+                        )
 
 
 class TestJsonSerializationHardening(unittest.TestCase):

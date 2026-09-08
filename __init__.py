@@ -29,6 +29,7 @@ from .ui.command_bar import register_command_bar, unregister_command_bar
 from .ui.conversation_drawer import register_conversation_drawer, unregister_conversation_drawer
 from .ui.keymap import register_keymaps, unregister_keymaps
 from .ui.header import register_header, unregister_header
+from .ui.web_launcher import register_web_launcher, unregister_web_launcher, start_web_server, stop_web_server
 from .ui.timer_bridge import TimerBridge
 from .adapter.blender_adapter import BlenderAdapter
 from .tools.registry import ToolRegistry
@@ -73,6 +74,7 @@ def register():
     register_conversation_drawer()
     register_header()
     register_keymaps()
+    register_web_launcher()
 
     # 2. Tool Registry & Readers
     registry = ToolRegistry()
@@ -94,22 +96,29 @@ def register():
     _timer_bridge = TimerBridge(runtime=_runtime, event_queue=_runtime.event_queue)
     _timer_bridge.register()
 
+    # 6. Local Web Server for Web UI Bridge
+    start_web_server(_runtime)
+
 
 def unregister():
     """Unregister all extension components and guarantee clean shutdown."""
     global _runtime, _timer_bridge
 
-    # 1. Stop timer bridge
+    # 1. Stop local web server
+    stop_web_server()
+
+    # 2. Stop timer bridge
     if _timer_bridge is not None:
         _timer_bridge.unregister()
         _timer_bridge = None
 
-    # 2. Shutdown runtime and background workers
+    # 3. Shutdown runtime and background workers
     if _runtime is not None:
         _runtime.shutdown()
         _runtime = None
 
-    # 3. Unregister UI & Keymaps
+    # 4. Unregister UI & Keymaps
+    unregister_web_launcher()
     unregister_keymaps()
     unregister_header()
     unregister_conversation_drawer()

@@ -14,10 +14,11 @@ def draw_viewport_header(self, context):
 
     row = layout.row(align=True)
     if props.agent_status in ("PROCESSING", "EXECUTING_TOOL"):
-        row.operator("ai_sidebar.open_conversation", text="✦ AI Busy...", icon="TIME")
+        row.operator("ai_sidebar.open_web_ui", text="✦ AI Busy...", icon="TIME")
         row.operator("ai_sidebar.cancel_turn", text="", icon="CANCEL")
     else:
-        row.operator("ai_sidebar.open_command_bar", text="✦ Ask AI", icon="CONSOLE")
+        row.operator("ai_sidebar.open_web_ui", text="✦ Open AI UI", icon="WINDOW")
+        row.operator("ai_sidebar.open_command_bar", text="Command", icon="CONSOLE")
 
 
 def register_header():
