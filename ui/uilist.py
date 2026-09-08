@@ -29,7 +29,7 @@ class AISIDEBAR_UL_history(UIList):
             if kind == "USER":
                 icon_name = "USER"
             elif kind == "ASSISTANT":
-                icon_name = "ROBOT"
+                icon_name = "SCRIPT"
             elif kind == "TOOL":
                 icon_name = "TOOL_SETTINGS"
             elif kind == "ERROR":

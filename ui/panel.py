@@ -59,7 +59,7 @@ class AISIDEBAR_PT_main_panel(Panel):
         # 2. Session History (UIList)
         # ---------------------------------------------------------------------
         hist_header = layout.row(align=True)
-        hist_header.label(text="Session History:", icon="PREVIEW")
+        hist_header.label(text="Session History:", icon="FILE_TEXT")
         hist_header.operator("ai_sidebar.clear_history", text="", icon="TRASH")
 
         layout.template_list(
