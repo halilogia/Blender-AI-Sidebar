@@ -18,7 +18,6 @@ def draw_viewport_header(self, context):
         row.operator("ai_sidebar.cancel_turn", text="", icon="CANCEL")
     else:
         row.operator("ai_sidebar.open_web_ui", text="✦ Open AI UI", icon="WINDOW")
-        row.operator("ai_sidebar.open_command_bar", text="Command", icon="CONSOLE")
 
 
 def register_header():

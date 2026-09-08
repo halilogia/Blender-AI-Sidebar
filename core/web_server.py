@@ -32,7 +32,7 @@ class LocalWebServer:
         port: int = 0,
     ):
         self.host = host
-        self.port = port
+        self._port = port
         self.session_token = secrets.token_hex(16)
         self.static_dir = static_dir or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
@@ -55,10 +55,17 @@ class LocalWebServer:
         return self._is_running
 
     @property
-    def base_url(self) -> str:
+    def port(self) -> int:
         if self._server:
-            actual_port = self._server.server_address[1]
-            return f"http://{self.host}:{actual_port}"
+            return self._server.server_address[1]
+        return self._port
+
+    @property
+    def token(self) -> str:
+        return self.session_token
+
+    @property
+    def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
     @property

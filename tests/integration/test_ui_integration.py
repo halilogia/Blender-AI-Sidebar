@@ -66,7 +66,6 @@ def test_registration_and_properties():
 
         # Check panel registration
         assert hasattr(bpy.types, "AISIDEBAR_PT_main_panel")
-        assert hasattr(bpy.types, "AISIDEBAR_UL_history")
         print("[PASS] UI Registration and properties verified.")
     finally:
         blender_ai_sidebar.unregister()

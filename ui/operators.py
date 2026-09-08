@@ -4,44 +4,6 @@ import bpy
 from bpy.types import Operator
 
 
-class AISIDEBAR_OT_open_command_bar(Operator):
-    """Open the floating AI Command Bar in the 3D Viewport."""
-
-    bl_idname = "ai_sidebar.open_command_bar"
-    bl_label = "Open Command Bar"
-    bl_description = "Open the floating AI Command Bar (Alt+Space)"
-
-    def execute(self, context):
-        props = getattr(context.window_manager, "ai_sidebar", None)
-        if props:
-            props.ui_mode = "COMMAND_BAR"
-        if not bpy.app.background:
-            try:
-                bpy.ops.wm.call_panel(name="AISIDEBAR_PT_command_bar", keep_open=True)
-            except Exception:
-                pass
-        return {"FINISHED"}
-
-
-class AISIDEBAR_OT_open_conversation(Operator):
-    """Open the floating AI Conversation Drawer in the 3D Viewport."""
-
-    bl_idname = "ai_sidebar.open_conversation"
-    bl_label = "Open Conversation Drawer"
-    bl_description = "Open the floating AI Conversation Drawer"
-
-    def execute(self, context):
-        props = getattr(context.window_manager, "ai_sidebar", None)
-        if props:
-            props.ui_mode = "CONVERSATION"
-        if not bpy.app.background:
-            try:
-                bpy.ops.wm.call_panel(name="AISIDEBAR_PT_conversation_drawer", keep_open=True)
-            except Exception:
-                pass
-        return {"FINISHED"}
-
-
 class AISIDEBAR_OT_send_prompt(Operator):
     """Submit prompt to the autonomous AI agent runtime."""
 
@@ -70,22 +32,13 @@ class AISIDEBAR_OT_send_prompt(Operator):
         if not prompt:
             return {"CANCELLED"}
 
-        # Clear input field immediately, switch UI mode to CONVERSATION, and dispatch turn
+        # Clear input field immediately and dispatch turn
         props.prompt_input = ""
         props.live_streaming_text = ""
         props.agent_status = "PROCESSING"
         props.current_action = "Thinking..."
-        props.ui_mode = "CONVERSATION"
 
         runtime.submit_prompt(prompt)
-
-        # Transition to Conversation Drawer view
-        if not bpy.app.background:
-            try:
-                bpy.ops.wm.call_panel(name="AISIDEBAR_PT_conversation_drawer", keep_open=True)
-            except Exception:
-                pass
-
         return {"FINISHED"}
 
 
@@ -139,8 +92,6 @@ class AISIDEBAR_OT_clear_history(Operator):
 
 
 CLASSES = (
-    AISIDEBAR_OT_open_command_bar,
-    AISIDEBAR_OT_open_conversation,
     AISIDEBAR_OT_send_prompt,
     AISIDEBAR_OT_cancel_turn,
     AISIDEBAR_OT_clear_history,

@@ -7,7 +7,7 @@ _keymaps: List[Tuple[bpy.types.KeyMap, bpy.types.KeyMapItem]] = []
 
 
 def register_keymaps():
-    """Register Alt+Space shortcut in 3D Viewport."""
+    """Register Alt+Space and Shift+Alt+A shortcuts to launch modern Web UI."""
     wm = bpy.context.window_manager
     if not wm or not wm.keyconfigs or not wm.keyconfigs.addon:
         return
@@ -15,18 +15,18 @@ def register_keymaps():
     kc = wm.keyconfigs.addon
     km = kc.keymaps.new(name="3D View", space_type="VIEW_3D")
 
-    # Primary shortcut: Alt + Space
+    # Primary shortcut: Alt + Space -> Open Web UI
     kmi = km.keymap_items.new(
-        "ai_sidebar.open_command_bar",
+        "ai_sidebar.open_web_ui",
         type="SPACE",
         value="PRESS",
         alt=True,
     )
     _keymaps.append((km, kmi))
 
-    # Secondary shortcut: Shift + Alt + A
+    # Secondary shortcut: Shift + Alt + A -> Open Web UI
     kmi2 = km.keymap_items.new(
-        "ai_sidebar.open_command_bar",
+        "ai_sidebar.open_web_ui",
         type="A",
         value="PRESS",
         shift=True,

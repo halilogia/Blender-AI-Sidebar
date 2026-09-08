@@ -14,7 +14,7 @@ TESTS = [
     "tests/integration/test_m1_acceptance.py",
     "tests/integration/test_preferences.py",
     "tests/integration/test_provider_roundtrip.py",
-    "tests/integration/test_floating_ui.py",
+    "tests/integration/test_web_ui_integration.py",
 ]
 
 BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"

@@ -5,7 +5,7 @@ bl_info = {
     "author": "Halil Emre",
     "version": (0, 2, 0),
     "blender": (4, 2, 0),
-    "location": "View3D > Sidebar > AI Sidebar / View3D > Alt+Space (Command Bar)",
+    "location": "View3D > Sidebar > AI Sidebar / View3D > Alt+Space",
     "description": "Autonomous AI Agent & Grounding Copilot for Blender",
     "category": "Development",
 }
@@ -22,11 +22,8 @@ if _addon_dir not in sys.path:
 
 from .ui.preferences import register_preferences, unregister_preferences
 from .ui.properties import register_properties, unregister_properties
-from .ui.uilist import register_uilist, unregister_uilist
 from .ui.operators import register_operators, unregister_operators
 from .ui.panel import register_panels, unregister_panels
-from .ui.command_bar import register_command_bar, unregister_command_bar
-from .ui.conversation_drawer import register_conversation_drawer, unregister_conversation_drawer
 from .ui.keymap import register_keymaps, unregister_keymaps
 from .ui.header import register_header, unregister_header
 from .ui.web_launcher import register_web_launcher, unregister_web_launcher, start_web_server, stop_web_server
@@ -56,6 +53,12 @@ def get_timer_bridge() -> Optional[TimerBridge]:
     return _timer_bridge
 
 
+def get_web_server():
+    """Retrieve the active local web server bridge instance."""
+    from .ui.web_launcher import get_web_server as _gws
+    return _gws()
+
+
 def register():
     """Register all extension components, tools, runtime, and timer bridge."""
     global _runtime, _timer_bridge
@@ -64,14 +67,11 @@ def register():
     if _runtime is not None or _timer_bridge is not None:
         unregister()
 
-    # 1. UI Preferences, Properties, UIList, Operators, Panels, Floating Bars, Header & Keymaps
+    # 1. UI Preferences, Properties, Operators, Panels, Header, Keymaps & Web Launcher
     register_preferences()
     register_properties()
-    register_uilist()
     register_operators()
     register_panels()
-    register_command_bar()
-    register_conversation_drawer()
     register_header()
     register_keymaps()
     register_web_launcher()
@@ -121,11 +121,8 @@ def unregister():
     unregister_web_launcher()
     unregister_keymaps()
     unregister_header()
-    unregister_conversation_drawer()
-    unregister_command_bar()
     unregister_panels()
     unregister_operators()
-    unregister_uilist()
     unregister_properties()
     unregister_preferences()
 
