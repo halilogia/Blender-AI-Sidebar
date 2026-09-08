@@ -10,7 +10,15 @@ bl_info = {
     "category": "Development",
 }
 
+import os
+import sys
 from typing import Optional
+
+# Ensure the addon directory is in sys.path so that internal packages
+# (core, tools, adapter, agent, ui) resolve reliably when loaded by Blender.
+_addon_dir = os.path.dirname(os.path.abspath(__file__))
+if _addon_dir not in sys.path:
+    sys.path.insert(0, _addon_dir)
 
 from .ui.preferences import register_preferences, unregister_preferences
 from .ui.properties import register_properties, unregister_properties
