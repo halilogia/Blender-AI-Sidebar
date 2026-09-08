@@ -56,6 +56,23 @@ class AISidebarUIProperties(PropertyGroup):
         default=-1,
     )
 
+    ui_mode: bpy.props.EnumProperty(
+        name="UI Mode",
+        description="Current AI floating UI state",
+        items=[
+            ("CLOSED", "Closed", "No floating panel active"),
+            ("COMMAND_BAR", "Command Bar", "Floating AI command input bar"),
+            ("CONVERSATION", "Conversation", "Active conversation and tool drawer"),
+        ],
+        default="CLOSED",
+    )
+
+    live_streaming_text: StringProperty(
+        name="Live Stream",
+        description="Accumulated streaming response for active turn",
+        default="",
+    )
+
 
 CLASSES = (
     AISidebarHistoryItem,

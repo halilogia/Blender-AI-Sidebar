@@ -1,4 +1,4 @@
-"""3D Viewport N-Panel definition for Blender AI Sidebar."""
+"""3D Viewport N-Panel definition for Blender AI Sidebar (Inspector & Control role)."""
 
 import textwrap
 import bpy
@@ -6,9 +6,9 @@ from bpy.types import Panel
 
 
 class AISIDEBAR_PT_main_panel(Panel):
-    """Main panel located in the 3D Viewport Sidebar (N-Panel)."""
+    """Inspector & Control panel located in the 3D Viewport Sidebar (N-Panel)."""
 
-    bl_label = "AI Copilot"
+    bl_label = "AI Inspector & Controls"
     bl_idname = "AISIDEBAR_PT_main_panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -22,41 +22,66 @@ class AISIDEBAR_PT_main_panel(Panel):
             layout.label(text="AI Sidebar properties not initialized.", icon="ERROR")
             return
 
-        from .. import get_runtime
-
-        runtime = get_runtime()
+        runtime = None
+        try:
+            from .. import get_runtime
+            runtime = get_runtime()
+        except (ImportError, ValueError):
+            import sys
+            mod = sys.modules.get("blender_ai_sidebar")
+            if mod and hasattr(mod, "get_runtime"):
+                runtime = mod.get_runtime()
 
         # ---------------------------------------------------------------------
-        # 1. Status Header Box
+        # 1. Quick Launch Actions
+        # ---------------------------------------------------------------------
+        launch_col = layout.column(align=True)
+        launch_col.scale_y = 1.3
+        launch_col.operator("ai_sidebar.open_command_bar", text="✦ Command Bar (Alt+Space)", icon="CONSOLE")
+
+        nav_row = launch_col.row(align=True)
+        nav_row.scale_y = 0.9
+        nav_row.operator("ai_sidebar.open_conversation", text="Conversation View", icon="SCRIPT")
+        if props.agent_status in ("PROCESSING", "EXECUTING_TOOL"):
+            nav_row.operator("ai_sidebar.cancel_turn", text="Cancel", icon="CANCEL")
+
+        layout.separator()
+
+        # ---------------------------------------------------------------------
+        # 2. Context & Scene State
+        # ---------------------------------------------------------------------
+        context_box = layout.box()
+        context_box.label(text="Scene Context:", icon="WORLD")
+        crow = context_box.row(align=True)
+        crow.label(text=f"Scene: {context.scene.name}")
+        crow.label(text=f"Objects: {len(context.scene.objects)}")
+
+        active_name = context.active_object.name if context.active_object else "None"
+        context_box.label(text=f"Active: {active_name}", icon="OBJECT_DATA")
+
+        # ---------------------------------------------------------------------
+        # 3. Agent & Model Status
         # ---------------------------------------------------------------------
         status_box = layout.box()
-        status_row = status_box.row(align=True)
+        status_box.label(text="Agent Status:", icon="SETTINGS")
+        srow = status_box.row(align=True)
 
         status = props.agent_status
         if status == "IDLE":
-            icon = "CHECKMARK"
-            status_text = "Status: IDLE"
+            srow.label(text="Status: IDLE", icon="CHECKMARK")
         elif status == "PROCESSING":
-            icon = "TIME"
-            status_text = "Status: PROCESSING (Thinking)"
+            srow.label(text="Status: PROCESSING", icon="TIME")
         elif status == "EXECUTING_TOOL":
-            icon = "TOOL_SETTINGS"
-            status_text = "Status: EXECUTING_TOOL"
+            srow.label(text="Status: TOOL EXEC", icon="TOOL_SETTINGS")
         elif status == "ERROR":
-            icon = "ERROR"
-            status_text = "Status: ERROR"
+            srow.label(text="Status: ERROR", icon="ERROR")
         else:
-            icon = "INFO"
-            status_text = f"Status: {status}"
+            srow.label(text=f"Status: {status}", icon="INFO")
 
-        status_row.label(text=status_text, icon=icon)
-
-        # Action / Summary Sub-row
-        action_row = status_box.row()
-        action_row.label(text=f"Action: {props.current_action}", icon="FORWARD")
+        status_box.label(text=f"Action: {props.current_action}", icon="FORWARD")
 
         # ---------------------------------------------------------------------
-        # 2. Session History (UIList)
+        # 4. Session History & Inspector (UIList)
         # ---------------------------------------------------------------------
         hist_header = layout.row(align=True)
         hist_header.label(text="Session History:", icon="FILE_TEXT")
@@ -69,27 +94,25 @@ class AISIDEBAR_PT_main_panel(Panel):
             "history",
             props,
             "history_index",
-            rows=5,
+            rows=4,
         )
 
         # ---------------------------------------------------------------------
-        # 3. Turn Detail Box (Bounded Textwrap)
+        # 5. Event Detail Box
         # ---------------------------------------------------------------------
         detail_box = layout.box()
-        detail_box.label(text="Event Details:", icon="INFO")
+        detail_box.label(text="Event Inspector:", icon="INFO")
 
         has_selection = bool(props.history) and 0 <= props.history_index < len(props.history)
         if has_selection:
             selected_item = props.history[props.history_index]
 
-            # Try to fetch rich python detail from RuntimeHistory
             detail_text = selected_item.summary
             if runtime and hasattr(runtime, "history"):
                 py_item = runtime.history.get_by_id(selected_item.item_id)
                 if py_item and py_item.detail:
                     detail_text = py_item.detail
 
-            # Text wrapping bounded to 12 lines
             raw_lines = detail_text.splitlines()
             wrapped_lines = []
             for rline in raw_lines:
@@ -98,33 +121,16 @@ class AISIDEBAR_PT_main_panel(Panel):
                 else:
                     wrapped_lines.append("")
 
-            display_lines = wrapped_lines[:12]
-            for line in display_lines:
+            for line in wrapped_lines[:10]:
                 detail_box.label(text=line)
 
-            if len(wrapped_lines) > 12:
+            if len(wrapped_lines) > 10:
                 detail_box.label(
-                    text=f"... (+{len(wrapped_lines) - 12} lines truncated)",
+                    text=f"... (+{len(wrapped_lines) - 10} lines truncated)",
                     icon="THREE_DOTS",
                 )
         else:
-            detail_box.label(text="Select an item above to view details.", icon="DOT")
-
-        # ---------------------------------------------------------------------
-        # 4. Prompt Input & Actions
-        # ---------------------------------------------------------------------
-        input_box = layout.box()
-        input_box.label(text="Prompt / Command:", icon="CONSOLE")
-        input_box.prop(props, "prompt_input", text="")
-
-        btn_row = input_box.row(align=True)
-        btn_row.scale_y = 1.25
-
-        # Send Operator
-        send_op = btn_row.operator("ai_sidebar.send_prompt", text="Send", icon="PLAY")
-
-        # Cancel Operator (enabled only when busy)
-        cancel_op = btn_row.operator("ai_sidebar.cancel_turn", text="Cancel", icon="CANCEL")
+            detail_box.label(text="Select an item above to inspect.", icon="DOT")
 
 
 CLASSES = (
@@ -146,5 +152,5 @@ def unregister_panels():
     for cls in reversed(CLASSES):
         try:
             bpy.utils.unregister_class(cls)
-        except (RuntimeError, ValueError):
+        except (ValueError, RuntimeError):
             pass

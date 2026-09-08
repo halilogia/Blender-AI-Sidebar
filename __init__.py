@@ -3,9 +3,9 @@
 bl_info = {
     "name": "Blender AI Sidebar",
     "author": "Halil Emre",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 2, 0),
-    "location": "View3D > Sidebar > AI Sidebar",
+    "location": "View3D > Sidebar > AI Sidebar / View3D > Alt+Space (Command Bar)",
     "description": "Autonomous AI Agent & Grounding Copilot for Blender",
     "category": "Development",
 }
@@ -25,6 +25,10 @@ from .ui.properties import register_properties, unregister_properties
 from .ui.uilist import register_uilist, unregister_uilist
 from .ui.operators import register_operators, unregister_operators
 from .ui.panel import register_panels, unregister_panels
+from .ui.command_bar import register_command_bar, unregister_command_bar
+from .ui.conversation_drawer import register_conversation_drawer, unregister_conversation_drawer
+from .ui.keymap import register_keymaps, unregister_keymaps
+from .ui.header import register_header, unregister_header
 from .ui.timer_bridge import TimerBridge
 from .adapter.blender_adapter import BlenderAdapter
 from .tools.registry import ToolRegistry
@@ -59,12 +63,16 @@ def register():
     if _runtime is not None or _timer_bridge is not None:
         unregister()
 
-    # 1. UI Preferences, Properties, UIList, Operators, & N-Panel
+    # 1. UI Preferences, Properties, UIList, Operators, Panels, Floating Bars, Header & Keymaps
     register_preferences()
     register_properties()
     register_uilist()
     register_operators()
     register_panels()
+    register_command_bar()
+    register_conversation_drawer()
+    register_header()
+    register_keymaps()
 
     # 2. Tool Registry & Readers
     registry = ToolRegistry()
@@ -101,7 +109,11 @@ def unregister():
         _runtime.shutdown()
         _runtime = None
 
-    # 3. Unregister UI
+    # 3. Unregister UI & Keymaps
+    unregister_keymaps()
+    unregister_header()
+    unregister_conversation_drawer()
+    unregister_command_bar()
     unregister_panels()
     unregister_operators()
     unregister_uilist()
