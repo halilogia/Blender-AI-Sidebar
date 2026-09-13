@@ -8,6 +8,7 @@ Zero Blender (bpy) dependencies. Pure Python standard library.
 
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
@@ -27,6 +28,28 @@ from agent.dispatcher import ToolDispatcher
 from agent.runtime import should_verify_visually
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
+
+
+def _execute_fn_takes_visual_desc(execute_fn: Optional[Callable[..., ToolResult]]) -> bool:
+    """Probe whether execute_fn accepts a second positional arg, without calling it."""
+    if execute_fn is None:
+        return False
+    try:
+        sig = inspect.signature(execute_fn)
+    except (TypeError, ValueError):
+        return False
+    params = list(sig.parameters.values())
+    for p in params:
+        if p.kind == inspect.Parameter.VAR_POSITIONAL:
+            return True
+    positional = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    if len(positional) >= 2:
+        return True
+    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+    n_required_positional = sum(1 for p in positional if p.default is inspect.Parameter.empty)
+    if has_var_kw and n_required_positional <= 2:
+        return True
+    return False
 
 
 class PlanExecutor:
@@ -54,9 +77,11 @@ class PlanExecutor:
         self.visual_verifier = visual_verifier
         self.policy = policy
         self.execute_fn = execute_fn
+        self._execute_fn_takes_visual_desc = _execute_fn_takes_visual_desc(execute_fn)
         self.approval_hook = approval_hook
         self.visual_expectations: Dict[str, str] = dict(visual_expectations or {})
         self.validator = PlanValidator(registry)
+        self._active_visual_expectations: Dict[str, str] = dict(self.visual_expectations)
 
     def _resolve_visual_description(self, step: PlanStep) -> Optional[str]:
         """Resolve explicit visual verification expectation for a plan step.
@@ -67,8 +92,8 @@ class PlanExecutor:
         1. An explicit per-step visual expectation is provided in visual_expectations, OR
         2. The step's expected_result explicitly contains visual verification keywords.
         """
-        if self.visual_expectations and step.step_id in self.visual_expectations:
-            return self.visual_expectations[step.step_id]
+        if self._active_visual_expectations and step.step_id in self._active_visual_expectations:
+            return self._active_visual_expectations[step.step_id]
 
         if step.expected_result and should_verify_visually(step.expected_result):
             return step.expected_result
@@ -100,12 +125,12 @@ class PlanExecutor:
 
         visual_desc = self._resolve_visual_description(step)
 
-        # 1. Custom execute_fn takes precedence if provided (used in targeted unit tests)
+        # 1. Custom execute_fn takes precedence if provided (used in targeted unit tests).
+        # Arity probed once at init via inspect.signature; body TypeError never retried.
         if self.execute_fn is not None:
-            try:
+            if self._execute_fn_takes_visual_desc:
                 return self.execute_fn(tool_call, visual_desc)
-            except TypeError:
-                return self.execute_fn(tool_call)
+            return self.execute_fn(tool_call)
 
         # 2. AgentRuntime handles dispatch + full verification pipeline on main thread
         if self.runtime is not None and hasattr(self.runtime, "execute_tool_call"):
@@ -179,7 +204,11 @@ class PlanExecutor:
             PlanExecutionSummary with final status, steps completed count, and step outcomes.
         """
         if visual_expectations:
-            self.visual_expectations.update(visual_expectations)
+            active = dict(self.visual_expectations)
+            active.update(visual_expectations)
+            self._active_visual_expectations = active
+        else:
+            self._active_visual_expectations = dict(self.visual_expectations)
 
         # 1. Strictly validate plan using PlanValidator
         validation_result = self.validator.validate(raw_plan)

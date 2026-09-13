@@ -812,7 +812,97 @@ class TestPlanExecutor(unittest.TestCase):
         mock_visual_verifier.verify_after_mutation.assert_called_once()
         self.assertIn("visual_verification", res_visual.step_results[0].tool_result.data)
 
-    # 21. Zero bpy dependency verification (AST inspection)
+    # 22. execute_fn accepting (tool_call, visual_desc) works
+    def test_execute_fn_two_arg_signature(self):
+        seen = {}
+
+        def fn2(tool_call, visual_desc):
+            seen["visual"] = visual_desc
+            return ToolResult.ok(tool=tool_call.tool_name, data={"ok": True})
+
+        ex = PlanExecutor(registry=self.registry, execute_fn=fn2)
+        summary = ex.execute_plan({
+            "title": "T",
+            "steps": [{"step_id": "s1", "tool_name": "create_primitive",
+                       "arguments": {"primitive_type": "CUBE"}}],
+        })
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        self.assertIsNone(seen["visual"])
+
+    # 23. execute_fn accepting only (tool_call) works
+    def test_execute_fn_one_arg_signature(self):
+        calls = []
+
+        def fn1(tool_call):
+            calls.append(tool_call.tool_name)
+            return ToolResult.ok(tool=tool_call.tool_name, data={"ok": True})
+
+        ex = PlanExecutor(registry=self.registry, execute_fn=fn1)
+        summary = ex.execute_plan({
+            "title": "T",
+            "steps": [{"step_id": "s1", "tool_name": "create_primitive",
+                       "arguments": {"primitive_type": "CUBE"}}],
+        })
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        self.assertEqual(calls, ["create_primitive"])
+
+    # 24. Body TypeError in two-arg execute_fn is NOT retried (no double execution)
+    def test_execute_fn_body_typeerror_not_retried(self):
+        calls = []
+
+        def fn2_buggy(tool_call, visual_desc):
+            calls.append(tool_call.tool_name)
+            raise TypeError("simulated internal bug after mutation")
+
+        ex = PlanExecutor(registry=self.registry, execute_fn=fn2_buggy)
+        summary = ex.execute_plan({
+            "title": "T",
+            "steps": [{"step_id": "s1", "tool_name": "create_primitive",
+                       "arguments": {"primitive_type": "CUBE"}}],
+        })
+        self.assertEqual(summary.status, PlanStatus.FAILED)
+        self.assertEqual(summary.step_results[0].status, PlanStepStatus.FAILED)
+        self.assertEqual(len(calls), 1, "execute_fn must run exactly once")
+
+    # 25. MagicMock execute_fn (no introspectable signature) defaults to two-arg call
+    def test_execute_fn_magicmock_called_once_two_args(self):
+        fn = MagicMock(return_value=ToolResult.ok(tool="create_primitive", data={}))
+        ex = PlanExecutor(registry=self.registry, execute_fn=fn)
+        summary = ex.execute_plan({
+            "title": "T",
+            "steps": [{"step_id": "s1", "tool_name": "create_primitive",
+                       "arguments": {"primitive_type": "CUBE"}}],
+        })
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        self.assertEqual(fn.call_count, 1)
+        self.assertEqual(len(fn.call_args[0]), 2)
+
+    # 26. visual_expectations do not leak across execute_plan calls
+    def test_visual_expectations_do_not_leak_across_calls(self):
+        mock_visual = MagicMock()
+        mock_visual.verify_after_mutation.return_value = MagicMock(
+            to_dict=lambda: {"status": "PASS"})
+        mock_verifier = MagicMock()
+        vr = MagicMock()
+        vr.passed = True
+        vr.to_dict.return_value = {"passed": True}
+        mock_verifier.verify.return_value = vr
+
+        ex = PlanExecutor(registry=self.registry, dispatcher=self.dispatcher,
+                          verifier=mock_verifier, visual_verifier=mock_visual)
+        plan = {"title": "T", "steps": [
+            {"step_id": "s1", "tool_name": "create_primitive",
+             "arguments": {"primitive_type": "CUBE"},
+             "expected_result": "Cube created"}]}
+        r1 = ex.execute_plan(plan, visual_expectations={"s1": "Visually verify cube"})
+        self.assertEqual(r1.status, PlanStatus.COMPLETED)
+        self.assertEqual(mock_visual.verify_after_mutation.call_count, 1)
+        r2 = ex.execute_plan(plan)
+        self.assertEqual(r2.status, PlanStatus.COMPLETED)
+        self.assertEqual(mock_visual.verify_after_mutation.call_count, 1,
+                         "stale visual_expectations must not trigger visual verifier on next call")
+
+    # 27. Zero bpy dependency verification (AST inspection)
     def test_no_bpy_dependency(self):
         """agent/plan_executor.py must not import or reference bpy."""
         file_path = os.path.abspath(
