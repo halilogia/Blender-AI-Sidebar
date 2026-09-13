@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-09-13
+
+### Added
+- **M7 Task 1: Viewport Screenshot Capture Primitive**:
+  - `capture_viewport` read-only semantic tool (`RiskLevel.READ_ONLY`) in `tools/read_only/capture_viewport.py`.
+  - `ViewportReader` in `adapter/readers/viewport_reader.py`:
+    - Resolves active 3D Viewport in Blender context and fallback screens.
+    - Offscreen GPU framebuffer rendering via `gpu.types.GPUOffScreen` with `do_color_management=True`.
+    - Pure Python in-memory PNG encoder (`encode_png_rgba`) using `zlib` and `struct` (zero external dependencies).
+    - Bounded in-memory LRU cache (max 10 images) mapping `image_id` to raw PNG bytes.
+    - Zero filesystem writes, zero scene contamination (objects, meshes, materials, images, and selection unchanged).
+  - Main-thread execution enforcement (`ThreadSafetyViolationError` on cross-thread calls).
+  - Clean metadata contract preventing conversation log and history pollution.
+  - Added `tests/unit/test_capture_viewport.py` (unit tests expanded to 320 tests).
+  - Added `tests/integration/test_viewport_capture.py` (master Blender integration test suite expanded to 15 suites).
+
+---
+
+## [0.6.0] - 2026-09-13
+
+### Added
+- **M6: Materials & Shader Tools**:
+  - `set_material`: Mutates Principled BSDF shader socket properties (`base_color`, `metallic`, `roughness`, `emission_color`, `emission_strength`, `alpha`).
+  - `assign_material`: Binds existing or newly created materials to object material slots with automatic slot expansion.
+  - Normalization & clamping: 3-element RGB automatically converted to 4-element RGBA; out-of-range scalars/colors clamped safely to [0, 1].
+  - Deterministic material verification in `ChangeVerifier` and `build_change_set_from_result`.
+  - Partial verification support: modifying a single property verifies without failing on untouched default sockets.
+  - Lossless shader undo/redo: all material mutations record atomic undo steps via `push_undo_step()`.
+  - Headless integration test suite (`tests/integration/test_material_mutations.py`) validating all 10 acceptance scenarios including genuine RNA divergence detection (`test_04_real_verification_fail`).
+
+---
+
+## [0.5.0] - 2026-09-13
+
+### Added
+- **M5: Deterministic Mutation Verification & Change Sets**:
+  - `ChangeSet` immutable data model capturing `operation`, `target_name`, `before`, `expected_after`, and `actual_after`.
+  - Pure Python `ChangeVerifier` engine (100% standard library, zero `bpy` dependencies).
+  - `build_change_set_from_result` mapper deriving expected states directly from tool call parameters.
+  - Floating point and rotational epsilon tolerances (`EPSILON=1e-3`, Euler circular wrapping in `[-pi, pi]`).
+  - Verification integration in `AgentRuntime._execute_and_verify`.
+  - Structured failure handling: divergence produces `VERIFICATION_FAILED` error code, detailed property mismatches, and safe turn termination.
+  - Headless integration test suite (`tests/integration/test_verification_integration.py`).
+
+---
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

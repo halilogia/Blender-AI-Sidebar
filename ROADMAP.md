@@ -2,6 +2,8 @@
 
 This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
+**CURRENT STATUS: M7 Task 1 — Viewport Screenshot Capture**
+
 ---
 
 ## Milestone Status Overview
@@ -13,11 +15,12 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M2.9** | **Native GPU Viewport HUD** | Floating in-viewport HUD (Higgsfield-inspired, pure 2D GPU, zero Chromium) | **COMPLETED** | GPU overlay integration suite, interactive HUD |
 | **M3.1** | **Safe Mutation & Undo Foundation** | `create_primitive`, `transform_object`, `delete_object`, atomic `undo_push()` | **COMPLETED** | 237 pure Python tests, 11 Blender suites |
 | **M4.1** | **Deterministic Approval Gate & HUD Card** | Centralized `ApprovalPolicy`, `PENDING_APPROVAL` gate, Viewport Approval Card | **COMPLETED** | 252 pure Python tests, 12 Blender suites |
-| **M3.2** | **Expanded Scene Mutation Tools** | Material assignment, modifier creation, parenting, collection management | *PLANNED* | M3 Milestone Phase 2 |
+| **M5** | **Deterministic Mutation Verification** | `ChangeSet`, `ChangeVerifier`, tolerance engine, `VERIFICATION_FAILED` handling | **COMPLETED** | 301 pure Python tests, 13 Blender suites |
+| **M6** | **Materials & Shader Tools** | `set_material`, `assign_material`, Principled BSDF mutation, slot expansion | **COMPLETED** | 313 pure Python tests, 14 Blender suites |
+| **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual reasoning | **IN PROGRESS (Task 1 Complete)** | 320 pure Python tests, 15 Blender suites |
 | **M4.2** | **High-Level Plan Review (Tier 1)** | Multi-step plan preview and user confirmation before batch operations | *PLANNED* | M4 Milestone Phase 2 |
-| **M5** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M5 Milestone |
-| **M6** | **Multimodal / Vision Grounding** | Viewport rendering capture & visual scene reasoning | *PLANNED* | M6 Milestone |
-| **M7** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M7 Milestone |
+| **M8** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M8 Milestone |
+| **M9** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M9 Milestone |
 
 ---
 
@@ -84,30 +87,73 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
   - 12/12 headless Blender integration test suites passing.
   - Verified live in real Blender GUI with 9Router.
 
+### Milestone 5: Deterministic Mutation Verification & Change Sets (v0.5.0)
+- [x] **Standardized ChangeSet Data Structure (`core/change_set.py`)**:
+  - Immutable representation capturing `operation`, `target_name`, `before`, `expected_after`, and `actual_after`.
+  - `VerificationResult` and `VerificationStatus` (`PASS`, `FAIL`).
+- [x] **Deterministic ChangeVerifier Engine (`agent/verifier.py`)**:
+  - 100% pure Python standard library; zero `bpy` dependency.
+  - Epsilon-based vector (`location`, `scale`) comparison and circular Euler angle wrapping difference.
+  - Strict verification rules for `create`, `transform`, and `delete` operations.
+- [x] **Runtime Verification Integration (`AgentRuntime._execute_and_verify`)**:
+  - `build_change_set_from_result` derives expected target state directly from tool arguments.
+  - Automatically captures live Blender actual snapshot from mutation adapter result.
+  - On verification pass: attaches `verification` metadata to `ToolResult.ok`.
+  - On verification fail: transitions to `AgentState.ERROR` with `VERIFICATION_FAILED` error code and detailed property mismatches, halting the turn safely.
+- [x] **Test Verification**:
+  - 301 pure Python unit tests passing.
+  - 13/13 headless Blender integration test suites passing (`test_verification_integration.py`).
+
+### Milestone 6: Materials & Shader Tools (v0.6.0)
+- [x] **`set_material` Tool (`tools/mutations/set_material.py`)**:
+  - Principled BSDF socket mutation: `base_color`, `metallic`, `roughness`, `emission_color`, `emission_strength`, `alpha`.
+  - Input normalization: 3-element RGB automatically converted to 4-element RGBA.
+  - Clamping: scalar and color inputs outside [0, 1] clamped safely to prevent shader engine errors.
+- [x] **`assign_material` Tool (`tools/mutations/assign_material.py`)**:
+  - Binds existing or new materials to object material slots.
+  - Automatic slot expansion: requesting `slot_index=2` on an object with 1 slot creates intermediate empty slots.
+- [x] **Lossless Shader Undo/Redo**:
+  - Every material mutation pushes an atomic undo transaction (`push_undo_step()`).
+  - Verified with native Blender `perform_undo()` and `perform_redo()`.
+- [x] **Deterministic Material Verification**:
+  - Extended `ChangeVerifier` and `build_change_set_from_result` for shader properties.
+  - Partial verification: modifying a single property (e.g. `roughness`) verifies without failing on untouched default sockets.
+  - Intentional divergence detection: verifies that genuine RNA divergence produces `VERIFICATION_FAILED`.
+- [x] **Test Verification**:
+  - 313 pure Python unit tests passing.
+  - 14/14 headless Blender integration test suites passing (`test_material_mutations.py`).
+
+### Milestone 7: Vision / Screenshot Grounding (In Progress)
+- [x] **M7 Task 1: Viewport Screenshot Capture Primitive (COMPLETED)**:
+  - `capture_viewport` read-only semantic tool (`RiskLevel.READ_ONLY`).
+  - Main-thread execution enforcement via `assert_main_thread()`.
+  - `ViewportReader`: renders active 3D Viewport via `gpu.types.GPUOffScreen` with `do_color_management=True`.
+  - Pure Python in-memory PNG encoder (`encode_png_rgba`) using `zlib` and `struct` (zero external dependencies).
+  - In-memory bounded LRU cache (max 10 images) preventing memory leaks.
+  - Zero filesystem writes, zero scene contamination (objects, meshes, materials, images, and selection remain untouched).
+  - Clean metadata contract (`image_id`, `width`, `height`, `format`, `mime_type`, `byte_size`) preventing conversation log pollution.
+  - 320 pure Python unit tests and 15/15 headless Blender integration suites passing.
+
 ---
 
 ## Planned Future Milestones
 
-### Milestone 3.2: Expanded Scene Mutation Tools
-- [ ] `assign_material` (Apply existing materials or configure basic Principled BSDF)
-- [ ] `apply_modifier` (Subdivision surface, Bevel, Boolean)
-- [ ] `manage_collections` (Move/link objects across collections)
-- [ ] `parent_objects` (Establish parent-child hierarchies)
+### Milestone 7: Vision / Screenshot Grounding (Upcoming Tasks)
+- [ ] **M7 Task 2**: Multimodal Provider Integration:
+  - Extend `OpenAICompatibleProvider` to format image payloads for vision-capable models (GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro).
+  - Retrieval of cached in-memory PNG bytes via `adapter.get_viewport_screenshot(image_id)`.
+- [ ] **M7 Task 3**: Visual Scene Verification:
+  - Visual sanity check comparing rendered viewport state against high-level prompt intent.
 
 ### Milestone 4.2: High-Level Plan Review (Tier 1)
 - [ ] Structured multi-step execution plan generated prior to complex scene edits.
 - [ ] User review and batch approval before initiating multiple sequential tool calls.
 
-### Milestone 5: Context Compaction & Extended Chat Sessions
+### Milestone 8: Context Compaction & Extended Chat Sessions
 - [ ] Rolling memory window with automated summarization of older conversational turns.
 - [ ] Selective tool result pruning (removing verbose mesh vertex dumps once inspected).
 - [ ] Multi-turn session persistence across `.blend` file reloads.
 
-### Milestone 6: Vision & Multimodal Grounding
-- [ ] Automated headless viewport screenshot capture (`bpy.ops.render.opengl`).
-- [ ] Multimodal payload assembly for vision-capable models (e.g. GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro).
-- [ ] Visual verification of framing, lighting, composition, and shader appearance.
-
-### Milestone 7: Text-to-3D Asset Generation Integration
+### Milestone 9: Text-to-3D Asset Generation Integration
 - [ ] External 3D generation API bridge (Tripo3D, Meshy, Rodin, Trellis).
 - [ ] `generate_3d_asset` tool dispatching prompt to text-to-3D service and automatically importing generated `.glb`/`.obj` mesh into active scene.

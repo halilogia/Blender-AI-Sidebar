@@ -2,10 +2,10 @@
 
 ## 1. Core Architectural Invariants
 
-Blender AI Copilot is designed around six non-negotiable principles:
+Blender AI Copilot is designed around seven non-negotiable principles:
 
 1. **Strict Thread Boundary**:
-   - **Blender Main Thread**: The Blender Python API (`bpy`) is strictly single-threaded. Any access to datablocks, contexts, scenes, collections, or materials outside the main thread results in undefined behavior, memory corruption, or hard crashes. Therefore, all tool execution, scene mutations, undo pushes, and UI updates run exclusively on the main thread.
+   - **Blender Main Thread**: The Blender Python API (`bpy`) is strictly single-threaded. Any access to datablocks, contexts, scenes, collections, or materials outside the main thread results in undefined behavior, memory corruption, or hard crashes. Therefore, all tool execution, scene mutations, undo pushes, viewport captures, and UI updates run exclusively on the main thread.
    - **Worker Background Thread**: Network requests (HTTP calls, Server-Sent Events parsing, socket I/O) are inherently blocking. All provider network I/O runs in a background thread (`AgentWorker`), ensuring 60 FPS viewport rendering and zero UI freezing.
 2. **Zero Blender Dependencies in Core**:
    - All core components (`agent/`, `core/`, `tools/`) are pure Python standard library code.
@@ -13,13 +13,17 @@ Blender AI Copilot is designed around six non-negotiable principles:
    - Pure Python components can be tested and verified in milliseconds outside Blender.
 3. **Deterministic Grounding & Safe Mutations**:
    - Grounding tools (`tools/read_only/`) strictly observe scene state without modifying datablocks.
-   - Mutation tools (`tools/mutation/`) execute localized, validated modifications primarily using Blender's Data API, strictly avoiding fragile screen context hacks.
+   - Mutation tools (`tools/mutations/`) execute localized, validated modifications primarily using Blender's Data API, strictly avoiding fragile screen context hacks.
 4. **Lossless Atomic Undo Integration**:
    - Every mutation immediately issues `bpy.ops.ed.undo_push()`, seamlessly integrating with Blender's native `Ctrl+Z` / `Ctrl+Shift+Z` undo stack.
 5. **Deterministic Approval Gate (No Blind Destructive Actions)**:
    - Tool execution risk is governed by a programmatic `ApprovalPolicy` (`RiskLevel.READ_ONLY`, `LOW`, `MEDIUM`, `HIGH`).
    - Destructive actions (such as `delete_object`) are trapped in `AgentState.PENDING_APPROVAL` and require explicit user approval via Viewport HUD or N-Panel before execution. The approval decision is never delegated to the LLM.
-6. **OpenAI Chat Completions Protocol Standardization**:
+6. **Deterministic Mutation Verification (Closed-Loop Reality Check)**:
+   - Every mutating tool invocation is verified deterministically by `ChangeVerifier` before results reach the LLM.
+   - The expected state is derived strictly from tool call arguments, while the actual state is read directly from live Blender RNA datablocks.
+   - If actual Blender state diverges from expected values beyond strict epsilon tolerances, the runtime halts with `VERIFICATION_FAILED`. The verification engine is 100% pure Python and completely free of `bpy` dependencies.
+7. **OpenAI Chat Completions Protocol Standardization**:
    - The provider layer targets the standardized Chat Completions streaming protocol (`POST /v1/chat/completions`). Any OpenAI-compatible backend (9Router, LM Studio, Ollama, OpenRouter, OpenAI) is natively supported without proprietary hacks.
 
 ---
@@ -78,12 +82,28 @@ Blender AI Copilot is designed around six non-negotiable principles:
                      │      └── State transition: PROCESSING -> EXECUTING_TOOL
                      │
                      ├── 4. ToolDispatcher.dispatch(tool_call) executes tool
-                     │         └─> BlenderAdapter reads/modifies datablocks & calls undo_push()
-                     ├── 5. Produces standardized ToolResult
-                     ├── 6. Records ChatMessage(role=TOOL, content=JSON(data))
-                     ├── 7. State transition: EXECUTING_TOOL -> PROCESSING
-                     ├── 8. Builds updated ProviderRequestContext with tool results
-                     └── 9. Submits next turn task to AgentWorker
+                     │      └─> BlenderAdapter executes mutation on Main Thread
+                     │          └─> Reader/Mutator captures live Blender snapshot (before/actual)
+                     │          └─> push_undo_step() records atomic undo
+                     ├── 5. Produces raw ToolResult with live RNA snapshot
+                     ├── 6. build_change_set_from_result(tool_name, arguments, result_data) -> ChangeSet
+                     ├── 7. ChangeVerifier.verify(change_set) [Pure Python, Zero bpy]
+                     │      │
+                     │      ├── [IF VERIFICATION PASSES]:
+                     │      │      ├── Attaches verification metadata to ToolResult.ok
+                     │      │      ├── Records ChatMessage(role=TOOL, content=JSON(data))
+                     │      │      ├── State transition: EXECUTING_TOOL -> PROCESSING
+                     │      │      ├── Builds updated ProviderRequestContext with verified results
+                     │      │      └── Submits next turn task to AgentWorker (Next LLM Turn)
+                     │      │
+                     │      └── [IF VERIFICATION FAILS]:
+                     │             ├── Produces ToolResult.fail("VERIFICATION_FAILED")
+                     │             │   with exact property mismatches
+                     │             ├── State transition: EXECUTING_TOOL -> ERROR
+                     │             ├── Emits AgentErrorEvent
+                     │             └── Safely terminates turn without sending unverified state to LLM
+                     │
+                     └── Next Turn Synthesis / Completion
                              │
                              ▼
                       [ AgentWorker ] (Next LLM Call)
@@ -131,6 +151,7 @@ Blender AI Copilot is designed around six non-negotiable principles:
   - **Stale Event Protection**: Rejects events whose `turn_id` does not match the active `_current_turn_id`.
   - **Loop Guard**: `max_tool_rounds` (default: 5) prevents infinite LLM-tool ping-pong loops.
   - **Cancellation Hygiene**: Immediate abort of pending tools, invalidation of pending approvals, and discarding of late-arriving provider completions.
+  - **Closed-Loop Verification Hook**: Integrates `_execute_and_verify` to intercept every mutation and validate actual Blender RNA state against expected parameters.
 
 ### 3.3. Deterministic Approval Gate (`agent/policy.py`)
 - **`ApprovalPolicy`**: Programmatic gate that inspects `ToolCall` and the registered `BaseTool.risk_level`.
@@ -140,23 +161,49 @@ Blender AI Copilot is designed around six non-negotiable principles:
 - **`PendingApproval`**: Immutable token container containing UUID `approval_id`, tool name, validated arguments, and a human-readable action description.
 - **One-Time Token Semantics**: Upon execution (`runtime.approve`), the token is consumed and invalidated to prevent replay or double-execution bugs.
 
-### 3.4. Safe Scene Mutations & Undo (`tools/mutation/`, `adapter/`)
+### 3.4. Safe Scene Mutations & Undo (`tools/mutations/`, `adapter/mutators/`)
 - **`create_primitive`**: Spawns `CUBE`, `SPHERE`, or `PLANE` via Blender Data API with deterministic naming and placement.
-- **`transform_object`**: Applies translation, rotation, and scaling coordinates to existing objects.
+- **`transform_object`**: Applies translation, rotation, and scaling coordinates to existing objects in absolute or relative coordinates.
 - **`delete_object`**: Unlinks objects from all scenes and collections and purges their datablocks safely.
+- **`set_material` (M6)**: Mutates Principled BSDF shader socket properties (`base_color`, `metallic`, `roughness`, `emission_color`, `emission_strength`, `alpha`). Automatically normalizes 3-element RGB to 4-element RGBA and clamps inputs outside [0, 1].
+- **`assign_material` (M6)**: Binds an existing or newly created material to an object's material slot. Features automatic slot expansion when targeting higher slot indices.
 - **`push_undo_step(description)`**: Invokes `bpy.ops.ed.undo_push()` after every successful mutation, integrating seamlessly into Blender's history.
 
-### 3.5. Grounding Tools & Adapter (`tools/read_only/`, `adapter/`)
-- **`BlenderAdapter`**: Strictly verifies execution on the Blender main thread (`threading.current_thread() == main_thread`). Exposes safe, read-only queries for scene summary, selection hierarchy, object details, material shader nodes, and mesh topology.
-- **`ToolRegistry` & `ToolDispatcher`**: Validates incoming tool calls against JSON Schema definitions (`required`, `properties`, `additionalProperties: false`) before execution.
+### 3.5. Grounding Tools & Viewport Capture (`tools/read_only/`, `adapter/readers/`)
+- **`BlenderAdapter`**: Strictly verifies execution on the Blender main thread (`threading.current_thread() == main_thread`). Exposes safe, read-only queries.
+- **5 Non-Destructive Grounding Tools**:
+  - `inspect_scene`: Hierarchy, active camera, render engine, counts.
+  - `inspect_selection`: Current selection and active object transform.
+  - `inspect_object`: Object metadata, transform matrices, modifier stack, material slots.
+  - `inspect_material`: Principled BSDF shader parameters and material slots.
+  - `inspect_mesh`: Topology diagnostics, vertex/edge/face counts, UV channels, world bounds.
+- **`capture_viewport` (M7 Task 1)**:
+  - Captures active 3D Viewport rendered state via `gpu.types.GPUOffScreen` with `do_color_management=True`.
+  - In-memory pure Python PNG encoder (`encode_png_rgba`) using `zlib` and `struct`.
+  - Zero scene mutation (no datablocks created, selection preserved).
+  - Bounded in-memory LRU cache (max 10 images) returning machine-readable metadata (`image_id`, `width`, `height`, `format`, `mime_type`, `byte_size`) without polluting conversation logs.
 
-### 3.6. Provider Protocol Engine (`agent/openai_provider.py`, `agent/sse_parser.py`, `agent/http_client.py`)
+### 3.6. Deterministic Mutation Verification Subsystem (`core/change_set.py`, `agent/verifier.py`)
+- **Decoupled Pure Python Engine**: The verification engine has **zero `bpy` imports** and runs identically in unit tests and live Blender sessions.
+- **`ChangeSet` Data Container**:
+  - `operation`: Action name (`create`, `transform`, `delete`, `set_material`, `assign_material`).
+  - `target_name`: Target object or material identifier.
+  - `before`: Snapshot prior to mutation (captured by reader/mutator).
+  - `expected_after`: Expected state derived directly from tool call parameters via `build_change_set_from_result`.
+  - `actual_after`: Live snapshot read directly from Blender RNA datablocks post-mutation by reader/mutator.
+- **Numeric & Geometric Tolerances**:
+  - Floating point scalar and vector comparisons use strict epsilon tolerance (`1e-3`).
+  - Rotational verification uses shortest angular difference with full Euler circular wrapping in `[-pi, pi]`.
+- **Partial Material Verification**: Verifies only the explicitly mutated shader properties, ensuring default sockets do not trigger false failure positives.
+- **Failure Isolation**: On divergence, produces `VERIFICATION_FAILED` result with granular mismatch reports (`property`, `expected`, `actual`), aborting turn execution before unverified state reaches the user or LLM.
+
+### 3.7. Provider Protocol Engine (`agent/openai_provider.py`, `agent/sse_parser.py`, `agent/http_client.py`)
 - **`HttpClient`**: Pure Python streaming HTTP client using `urllib.request`. Reads responses in arbitrary byte chunks supporting immediate abort via `cancel_event`.
 - **`SSEParser`**: Deterministic byte-level Server-Sent Events parser adhering to the W3C EventSource specification. Handles arbitrary chunk fragmentation across character boundaries with strict event size guards.
 - **`ToolCallAccumulator`**: Reassembles fragmented streaming tool-call deltas into complete, validated `ToolCall` objects.
 - **`ContextBuilder`**: Assembles system prompt, conversation history, and tool schemas into an immutable `ProviderRequestContext` while enforcing character safety caps (`MAX_CONTEXT_CHARS=15000`).
 
-### 3.7. Native Dual User Interface (`ui/`)
+### 3.8. Native Dual User Interface (`ui/`)
 - **`GPU Viewport Overlay` (`ui/gpu_overlay/`)**: Floating HUD rendered directly on Blender's 3D Viewport framebuffer (`SpaceView3D.draw_handler_add` with `POST_PIXEL`). Features anti-aliased rounded box geometry, multi-pass drop shadow, blinking cursor, full Turkish/Unicode text editing, interactive Approve/Reject buttons, hotkey triggering (`Alt+Space`), and in-scene assistant drawer with zero external C++ dependencies.
 - **`N-Panel Sidebar` (`ui/panel.py`, `ui/uilist.py`)**: Persistent 3D Viewport sidebar panel providing full conversation history, token metrics, and manual approval controls.
 - **`TimerBridge`**: Registers with `bpy.app.timers`. Each tick drains up to `max_events_per_tick` (10) within `max_tick_seconds` (5 ms), processes events on the main thread, synchronizes `WindowManager` RNA properties, and tags visible viewports for redraw.
@@ -178,6 +225,8 @@ Blender AI Copilot is designed around six non-negotiable principles:
 | **Destructive Action Intercepted**| `ApprovalPolicy` gate | Transitions to `PENDING_APPROVAL`. Tool will not execute until explicit user confirmation. |
 | **User Rejection of Action** | `AgentRuntime.reject` | Emits `ToolResult.fail("USER_REJECTED")`. Agent informs LLM; conversation proceeds normally. |
 | **Invalid / Expired Approval** | `AgentRuntime.approve` | Rejects stale or duplicate execution attempts. No orphaned operations. |
+| **Mutation Outcome Divergence** | `ChangeVerifier` -> `AgentRuntime` | Returns `ToolResult.fail("VERIFICATION_FAILED")` with mismatch details. Transitions to `AgentState.ERROR`. |
+| **Viewport Render Unavailable** | `BlenderAdapter.capture_viewport` | Returns `ToolResult.fail("VIEWPORT_UNAVAILABLE")`. Catches missing viewport or GPU offscreen error safely. |
 | **Infinite Tool Call Loop** | `AgentRuntime._current_tool_round` | Triggers `MAX_TOOL_ROUNDS_EXCEEDED` when `_current_tool_round > max_tool_rounds`. Transitions to `ERROR`. |
 | **User Turn Cancellation** | `AgentRuntime.cancel_current_turn` | Sets `cancel_event`, drops worker stream, invalidates `turn_id` and approvals, resets state to `IDLE`. |
 
@@ -192,3 +241,4 @@ Blender AI Copilot is designed around six non-negotiable principles:
    - Masked strings (`sk-1...abcd`) are used in history and serialization.
 3. **Deterministic Human-in-the-Loop Gate**: Destructive actions (such as deleting objects) are mathematically prevented from firing without manual confirmation, protecting artists against accidental scene corruption or hallucinations.
 4. **Lossless Recovery**: Every mutation is atomic and recorded in Blender's undo buffer, guaranteeing that the artist can undo any AI action with a single keystroke (`Ctrl+Z`).
+5. **Deterministic Verification Gate**: Mutations are guaranteed to conform to expected geometric and shader parameters through live RNA inspection, preventing silent scene state drift.
