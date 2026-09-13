@@ -19,6 +19,7 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 5. **Deterministic Approval Gate (No Blind Destructive Actions)**:
    - Tool execution risk is governed by a programmatic `ApprovalPolicy` (`RiskLevel.READ_ONLY`, `LOW`, `MEDIUM`, `HIGH`).
    - Destructive actions (such as `delete_object`) are trapped in `AgentState.PENDING_APPROVAL` and require explicit user approval via Viewport HUD or N-Panel before execution. The approval decision is never delegated to the LLM.
+   - Multi-step plans use a single batch approval (`PlanReview`); standalone tool calls keep the existing single-tool approval path.
 6. **Deterministic Mutation Verification (Closed-Loop Reality Check)**:
    - Every mutating tool invocation is verified deterministically by `ChangeVerifier` before results reach the LLM.
    - The expected state is derived strictly from tool call arguments, while the actual state is read directly from live Blender RNA datablocks.
@@ -160,6 +161,39 @@ Blender AI Copilot is designed around seven non-negotiable principles:
   - `RiskLevel.MEDIUM` & `HIGH`: Intercepted before dispatch (e.g. `delete_object`).
 - **`PendingApproval`**: Immutable token container containing UUID `approval_id`, tool name, validated arguments, and a human-readable action description.
 - **One-Time Token Semantics**: Upon execution (`runtime.approve`), the token is consumed and invalidated to prevent replay or double-execution bugs.
+
+### 3.3b. High-Level Plan Review & Batch Approval (M4.2)
+- **`PlanExecutor` is an orchestration layer** over the existing Tool/Dispatcher/Verification stack; it invents no new Blender mutation API.
+- **Flow**:
+```text
+User Prompt
+    ↓
+LLM
+    ↓
+propose_plan
+    ↓
+PlanValidator
+    ↓
+PlanReview
+    ↓
+Batch Approval
+    ↓
+PlanExecutor
+    ↓
+Tool Dispatcher
+    ↓
+Blender Tool
+    ↓
+Semantic Verification
+    ↓
+(optional) Visual Verification
+    ↓
+Plan Execution Summary
+```
+- **Risk authority**: LLM-supplied `overall_risk` is ignored; overall/step risk is derived deterministically from registry tool metadata.
+- **`propose_plan` cannot be nested** as an execution step (recursion rejected by validator and executor).
+- **Plan is an immutable validated snapshot**: approved arguments execute exactly as reviewed; no step runs before batch approval.
+- **Batch vs single-tool approval**: an approved plan covers its MEDIUM/HIGH/CRITICAL steps without per-step re-prompt; independent standalone tool calls still use the normal single-tool `PendingApproval` path.
 
 ### 3.4. Safe Scene Mutations & Undo (`tools/mutations/`, `adapter/mutators/`)
 - **`create_primitive`**: Spawns `CUBE`, `SPHERE`, or `PLANE` via Blender Data API with deterministic naming and placement.

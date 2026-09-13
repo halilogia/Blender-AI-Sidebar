@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased] - M4.2 High-Level Plan Review
+
+### Added
+- **M4.2: Structured Plans, Validation, Execution, Batch Approval**:
+  - Frozen `Plan` / `PlanStep` models with validated-snapshot immutability.
+  - Strict `PlanValidator`: unknown-tool, argument schema, dependency, cycle and `propose_plan`-nesting rejection; deterministic topological order.
+  - `propose_plan` meta-tool for declarative plan intake (no scene mutation).
+  - `PlanExecutor` orchestration layer over existing ToolDispatcher plus semantic verification and explicit visual-verification hooks; fail-fast step execution with `PlanExecutionSummary`.
+  - `PlanReview` single batch-approval gate: no step executes before approval; approve runs immutable plan once; reject runs zero mutations; single-use, stale-turn/cancellation protected.
+  - Approved plan suppresses per-step re-approval; standalone tool approval path unchanged.
+  - Risk derived from registry/tool metadata; LLM `overall_risk` ignored.
+
+---
+
 ## [0.7.0] - 2026-09-13
 
 ### Added

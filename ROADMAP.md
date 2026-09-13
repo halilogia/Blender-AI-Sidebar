@@ -18,7 +18,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M5** | **Deterministic Mutation Verification** | `ChangeSet`, `ChangeVerifier`, tolerance engine, `VERIFICATION_FAILED` handling | **COMPLETED** | 301 pure Python tests, 13 Blender suites |
 | **M6** | **Materials & Shader Tools** | `set_material`, `assign_material`, Principled BSDF mutation, slot expansion | **COMPLETED** | 313 pure Python tests, 14 Blender suites |
 | **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual reasoning | **IN PROGRESS (Task 2 Complete)** | 335 pure Python tests, 16 Blender suites |
-| **M4.2** | **High-Level Plan Review (Tier 1)** | Multi-step plan preview and user confirmation before batch operations | *PLANNED* | M4 Milestone Phase 2 |
+| **M4.2** | **High-Level Plan Review** | Structured immutable plans, PlanValidator, propose_plan, PlanExecutor, batch approval | **COMPLETED** | 517 pure Python tests |
 | **M8** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M8 Milestone |
 | **M9** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M9 Milestone |
 
@@ -158,9 +158,13 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 
 ## Planned Future Milestones
 
-### Milestone 4.2: High-Level Plan Review (Tier 1)
-- [ ] Structured multi-step execution plan generated prior to complex scene edits.
-- [ ] User review and batch approval before initiating multiple sequential tool calls.
+### Milestone 4.2: High-Level Plan Review (COMPLETED)
+- [x] Structured immutable execution plans (`agent/plan_models.py`): frozen `Plan` / `PlanStep`, validated snapshot semantics.
+- [x] Strict `PlanValidator` (`agent/plan_validator.py`): unknown-tool, schema, dependency, cycle and `propose_plan`-nesting rejection; risk derived deterministically from registry/tool metadata (LLM `overall_risk` is not authoritative).
+- [x] `propose_plan` meta-tool: declarative plan intake only, no scene mutation, no recursion inside execution plans.
+- [x] Deterministic topological `PlanExecutor` (`agent/plan_executor.py`): orchestration layer over existing ToolDispatcher/verification, fail-fast execution, `PlanExecutionSummary`.
+- [x] High-level `PlanReview` + single batch approval: one review card before any step executes; approve runs immutable plan exactly once; reject runs zero mutations; single-use, stale-turn/cancellation protected.
+- [x] Approved plan suppresses per-step re-approval; standalone single-tool approval behavior unchanged.
 
 ### Milestone 8: Context Compaction & Rolling Memory (COMPLETED)
 - [x] **M8 Task 1: Context Compaction Architecture / Minimal Design**:
@@ -185,10 +189,6 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 ---
 
 ## Planned Future Milestones
-
-### Milestone 4.2: High-Level Plan Review (Tier 1)
-- [ ] Structured multi-step execution plan generated prior to complex scene edits.
-- [ ] User review and batch approval before initiating multiple sequential tool calls.
 
 ### Milestone 9: Text-to-3D Asset Generation Integration
 - [ ] External 3D generation API bridge (Tripo3D, Meshy, Rodin, Trellis).
