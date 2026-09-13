@@ -281,6 +281,24 @@ class AgentRuntime:
             expected_visual_description=expected_visual_description,
         )
 
+    def execute_plan(
+        self,
+        raw_plan: Any,
+        approval_hook: Optional[Any] = None,
+    ) -> Any:
+        """Validate and execute a multi-step plan deterministically on the main thread."""
+        from agent.plan_executor import PlanExecutor
+
+        executor = PlanExecutor(
+            registry=self.dispatcher.registry,
+            dispatcher=self.dispatcher,
+            runtime=self,
+            verifier=self.verifier,
+            policy=self.policy,
+            approval_hook=approval_hook,
+        )
+        return executor.execute_plan(raw_plan)
+
     def verify_visual(
         self,
         expected_description: str,
