@@ -35,11 +35,14 @@ class RollingMemory:
 
     Extracts concise, structured task and scene knowledge from older turn clusters
     to prevent context window overflow while preserving grounded scene truth.
+    Maintains strict scene-state consistency: deleted entities are moved to
+    deleted_entities and never shown as living in active Verified Scene State.
     """
 
     def __init__(self):
         self.tasks: List[str] = []
         self.verified_mutations: Dict[str, Dict[str, Any]] = {}
+        self.deleted_entities: List[str] = []
         self.inspections: List[str] = []
         self.errors: List[str] = []
         self.last_visual_verification: Optional[Dict[str, str]] = None
@@ -84,6 +87,9 @@ class RollingMemory:
             elif line_str.startswith("- Verified Scene State:"):
                 current_section = "verified"
                 continue
+            elif line_str.startswith("- Deleted Objects:"):
+                current_section = "deleted"
+                continue
             elif line_str.startswith("- Inspections:"):
                 current_section = "inspections"
                 continue
@@ -95,12 +101,17 @@ class RollingMemory:
                 task_item = line_str[2:].strip().strip('"')
                 if task_item and task_item not in self.tasks:
                     self.tasks.append(task_item)
+            elif current_section == "deleted" and line_str.startswith("* "):
+                # e.g. * 'Cube': deleted [PASS]
+                target_str = line_str[2:].split(":")[0].strip().strip("'")
+                if target_str and target_str not in self.deleted_entities:
+                    if target_str not in self.verified_mutations:
+                        self.deleted_entities.append(target_str)
             elif current_section == "inspections" and line_str.startswith("* "):
                 insp_item = line_str[2:].strip()
                 if insp_item and insp_item not in self.inspections:
                     self.inspections.append(insp_item)
             elif current_section == "visual" and "Last verdict:" in line_str:
-                # e.g. * Last verdict: PASS ("...")
                 parts = line_str.split("Last verdict:", 1)[-1].strip()
                 decision = parts.split()[0] if parts else "UNKNOWN"
                 rationale = ""
@@ -134,40 +145,51 @@ class RollingMemory:
 
         # 2. Check for RNA mutation verification
         verif = data.get("verification")
-        if isinstance(verif, dict) and verif.get("status") in ("PASS", "OK"):
+        if isinstance(verif, dict):
+            status = verif.get("status")
             op = verif.get("operation") or tool_name
             target = verif.get("target_name") or data.get("name") or data.get("object_name") or "target"
-            props = verif.get("verified_properties", [])
 
-            entry: Dict[str, Any] = {
-                "operation": op,
-                "target": target,
-                "status": "PASS",
-                "properties": {},
-            }
+            if status in ("PASS", "OK"):
+                if op in ("delete", "delete_object"):
+                    # Object successfully deleted: remove from active living entities
+                    self.verified_mutations.pop(target, None)
+                    if target not in self.deleted_entities:
+                        self.deleted_entities.append(target)
+                else:
+                    # Object created or modified: remove from deleted if re-created
+                    if target in self.deleted_entities:
+                        self.deleted_entities.remove(target)
 
-            # Capture key properties safely without dumping giant JSONs
-            if op in ("create", "create_primitive"):
-                entry["primitive_type"] = data.get("primitive_type") or data.get("type", "OBJECT")
-                if "location" in data and isinstance(data["location"], (list, tuple)):
-                    entry["properties"]["location"] = [round(float(v), 2) for v in data["location"][:3]]
-            elif op in ("transform", "transform_object"):
-                for prop_name in ("location", "rotation", "scale"):
-                    if prop_name in data and isinstance(data[prop_name], (list, tuple)):
-                        entry["properties"][prop_name] = [round(float(v), 2) for v in data[prop_name][:3]]
-            elif op in ("set_material", "assign_material"):
-                mat_name = data.get("material_name") or data.get("name")
-                if mat_name:
-                    entry["material"] = mat_name
-                # Note key modified shader sockets
-                shader_keys = ("roughness", "metallic", "emission_strength", "alpha")
-                for sk in shader_keys:
-                    if sk in data:
-                        entry["properties"][sk] = round(float(data[sk]), 2)
-            elif op in ("delete", "delete_object"):
-                entry["operation"] = "delete"
+                    entry: Dict[str, Any] = {
+                        "operation": op,
+                        "target": target,
+                        "status": "PASS",
+                        "properties": {},
+                    }
 
-            self.verified_mutations[target] = entry
+                    if op in ("create", "create_primitive"):
+                        entry["primitive_type"] = data.get("primitive_type") or data.get("type", "OBJECT")
+                        if "location" in data and isinstance(data["location"], (list, tuple)):
+                            entry["properties"]["location"] = [round(float(v), 2) for v in data["location"][:3]]
+                    elif op in ("transform", "transform_object"):
+                        for prop_name in ("location", "rotation", "scale"):
+                            if prop_name in data and isinstance(data[prop_name], (list, tuple)):
+                                entry["properties"][prop_name] = [round(float(v), 2) for v in data[prop_name][:3]]
+                    elif op in ("set_material", "assign_material"):
+                        mat_name = data.get("material_name") or data.get("name")
+                        if mat_name:
+                            entry["material"] = mat_name
+                        shader_keys = ("roughness", "metallic", "emission_strength", "alpha")
+                        for sk in shader_keys:
+                            if sk in data:
+                                entry["properties"][sk] = round(float(data[sk]), 2)
+
+                    self.verified_mutations[target] = entry
+            elif status == "FAIL":
+                # Mutation failed semantic verification: record failure, do NOT modify active state
+                self.errors.append(f"{tool_name} ('{target}'): VERIFICATION_FAILED")
+                return
 
         # 3. Check for Visual Verification
         vis = data.get("visual_verification")
@@ -218,7 +240,7 @@ class RollingMemory:
             task_lines = [f'  * "{t}"' for t in self.tasks[-6:]]  # Keep up to last 6 distinct tasks
             sections.append("- Completed Tasks:\n" + "\n".join(task_lines))
 
-        # 2. Verified Scene State
+        # 2. Verified Scene State (Living/active entities only)
         if self.verified_mutations:
             state_lines = []
             for name, item in sorted(self.verified_mutations.items()):
@@ -231,19 +253,24 @@ class RollingMemory:
                 state_lines.append(f"  * '{name}': {op}{props_str}{mat_str} [PASS]")
             sections.append("- Verified Scene State:\n" + "\n".join(state_lines))
 
-        # 3. Inspections
+        # 3. Deleted Objects
+        if self.deleted_entities:
+            del_lines = [f"  * '{d}': deleted [PASS]" for d in sorted(self.deleted_entities)]
+            sections.append("- Deleted Objects:\n" + "\n".join(del_lines))
+
+        # 4. Inspections
         if self.inspections:
             insp_lines = [f"  * {i}" for i in self.inspections[-4:]]  # Keep up to last 4
             sections.append("- Inspections:\n" + "\n".join(insp_lines))
 
-        # 4. Visual Verification
+        # 5. Visual Verification
         if self.last_visual_verification:
             dec = self.last_visual_verification.get("decision", "UNKNOWN")
             rat = self.last_visual_verification.get("rationale", "")
             rat_str = f' ("{rat}")' if rat else ""
             sections.append(f"- Visual Verification:\n  * Last verdict: {dec}{rat_str}")
 
-        # 5. Errors if any
+        # 6. Errors if any
         if self.errors:
             err_lines = [f"  * {e}" for e in self.errors[-3:]]
             sections.append("- Past Warnings/Errors:\n" + "\n".join(err_lines))
@@ -278,15 +305,22 @@ class RollingMemory:
 
 def partition_conversation_into_turns(
     messages: Sequence[ChatMessage],
-) -> Tuple[Optional[ChatMessage], List[List[ChatMessage]]]:
-    """Partition a sequence of ChatMessages into (system_message, list_of_turn_clusters).
+) -> Tuple[Optional[ChatMessage], Optional[List[ChatMessage]], List[List[ChatMessage]]]:
+    """Partition a sequence of ChatMessages into:
+    (system_message, prior_summary_cluster, real_turn_clusters).
 
-    A turn cluster begins at a USER message and encompasses all subsequent ASSISTANT
-    and TOOL messages until the next USER message.
-    Preserves tool-call and tool-result pairing integrity within each cluster.
+    Invariants:
+    - system_message: The Role.SYSTEM message at index 0, if present.
+    - prior_summary_cluster: The synthetic [USER, ASSISTANT] pair containing SUMMARY_MARKER,
+      if generated by a previous compaction.
+    - real_turn_clusters: List of actual user turns, where each turn starts with a real
+      Role.USER message and includes all subsequent ASSISTANT and TOOL messages.
+
+    This guarantees prior summary blocks are NEVER miscounted as new real user turns
+    during successive compactions.
     """
     if not messages:
-        return None, []
+        return None, None, []
 
     system_msg: Optional[ChatMessage] = None
     remaining: List[ChatMessage] = []
@@ -296,6 +330,20 @@ def partition_conversation_into_turns(
         remaining = list(messages[1:])
     else:
         remaining = list(messages)
+
+    prior_summary: Optional[List[ChatMessage]] = None
+
+    # Detect if the conversation starts with a previously compacted summary block
+    # Structure: USER(content contains SUMMARY_MARKER) followed by optional ASSISTANT ack
+    if remaining and remaining[0].role == Role.USER and remaining[0].content and SUMMARY_MARKER in remaining[0].content:
+        summary_user_msg = remaining[0]
+        summary_ack_msg = None
+        idx = 1
+        if len(remaining) > 1 and remaining[1].role == Role.ASSISTANT and remaining[1].content and "Understood." in remaining[1].content:
+            summary_ack_msg = remaining[1]
+            idx = 2
+        prior_summary = [summary_user_msg] + ([summary_ack_msg] if summary_ack_msg else [])
+        remaining = remaining[idx:]
 
     turn_clusters: List[List[ChatMessage]] = []
     current_cluster: List[ChatMessage] = []
@@ -309,13 +357,12 @@ def partition_conversation_into_turns(
             if current_cluster:
                 current_cluster.append(msg)
             else:
-                # Orphaned message before first USER (e.g. system ack)
                 current_cluster = [msg]
 
     if current_cluster:
         turn_clusters.append(current_cluster)
 
-    return system_msg, turn_clusters
+    return system_msg, prior_summary, turn_clusters
 
 
 def compact_conversation(
@@ -331,6 +378,7 @@ def compact_conversation(
     - Older turns are processed as atomic clusters; tool-call / tool-result pairs are never split.
     - Ephemeral `image_id` references from older turns are completely unlinked to prevent LRU cache misses.
     - Active / retained turn image_ids remain intact.
+    - Prior summary blocks are absorbed and never miscounted as new user turns.
     - Conversation.validate_sequence() is strictly verified before returning.
 
     Args:
@@ -345,17 +393,23 @@ def compact_conversation(
     if calculate_messages_chars(raw_messages) <= trigger_chars:
         return conversation, False
 
-    system_msg, turn_clusters = partition_conversation_into_turns(raw_messages)
+    system_msg, prior_summary, turn_clusters = partition_conversation_into_turns(raw_messages)
 
-    # Need more clusters than retained_turns to perform compaction
+    # Need more REAL turn clusters than retained_turns to perform compaction
     if len(turn_clusters) <= retained_turns:
         return conversation, False
 
     older_clusters = turn_clusters[:-retained_turns]
     kept_clusters = turn_clusters[-retained_turns:]
 
-    # Build rolling memory from older clusters
+    # Build rolling memory
     memory = RollingMemory()
+
+    # 1. Absorb prior summary if present
+    if prior_summary:
+        memory.add_turn_cluster(prior_summary)
+
+    # 2. Extract from older real turn clusters
     for cluster in older_clusters:
         memory.add_turn_cluster(cluster)
 

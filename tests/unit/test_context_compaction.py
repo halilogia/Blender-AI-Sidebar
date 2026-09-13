@@ -79,9 +79,10 @@ class TestContextCompaction(unittest.TestCase):
         # Turn 3
         conv.add_message(ChatMessage(role=Role.USER, content="User 3"))
 
-        system_msg, turns = partition_conversation_into_turns(conv.messages)
+        system_msg, prior_summary, turns = partition_conversation_into_turns(conv.messages)
         self.assertIsNotNone(system_msg)
         self.assertEqual(system_msg.content, "System instructions")
+        self.assertIsNone(prior_summary)
         self.assertEqual(len(turns), 3)
         self.assertEqual(turns[0][0].content, "User 1")
         self.assertEqual(turns[1][0].content, "User 2")
@@ -502,6 +503,273 @@ class TestContextCompaction(unittest.TestCase):
         # Even with no turns to compact, the 15000 safety guard caps it
         self.assertEqual(ctx.messages[0].role, Role.SYSTEM)
 
+    # -------------------------------------------------------------------------
+    # Scene-State Delete Invariant Tests
+    # -------------------------------------------------------------------------
+
+    def test_create_cube_compact_shows_cube_present(self):
+        """create Cube -> compact -> Cube is present in Verified Scene State."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        tc = ToolCall(call_id="c1", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
+        res = json.dumps({
+            "name": "Cube",
+            "location": [0.0, 0.0, 0.0],
+            "verification": {"status": "PASS", "operation": "create", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Create a cube: " + "X" * 6000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res, tool_call_id="c1", name="create_primitive"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Done: " + "Y" * 6000))
+
+        # Retained turns
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 2"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+
+        compacted_conv, was_compacted = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(was_compacted)
+
+        summary_text = compacted_conv.messages[1].content
+        self.assertIn("- Verified Scene State:", summary_text)
+        self.assertIn("'Cube': create", summary_text)
+        self.assertNotIn("- Deleted Objects:", summary_text)
+
+    def test_delete_cube_compact_shows_cube_in_deleted_objects_not_active(self):
+        """delete Cube -> compact -> Cube is listed in Deleted Objects, not living in active state."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        tc = ToolCall(call_id="c1", tool_name="delete_object", arguments={"name": "Cube"})
+        res = json.dumps({
+            "name": "Cube",
+            "deleted": True,
+            "verification": {"status": "PASS", "operation": "delete", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Delete cube: " + "X" * 6000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res, tool_call_id="c1", name="delete_object"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Deleted: " + "Y" * 6000))
+
+        # Retained turns
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 2"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+
+        compacted_conv, was_compacted = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(was_compacted)
+
+        summary_text = compacted_conv.messages[1].content
+        self.assertIn("- Deleted Objects:", summary_text)
+        self.assertIn("'Cube': deleted [PASS]", summary_text)
+        self.assertNotIn("- Verified Scene State:", summary_text)
+
+    def test_create_transform_delete_cube_compact_shows_only_deleted(self):
+        """create Cube -> transform Cube -> delete Cube -> compact -> Cube shows ONLY as deleted."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        # Turn 1: Create
+        tc1 = ToolCall(call_id="c1", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
+        res1 = json.dumps({
+            "name": "Cube",
+            "verification": {"status": "PASS", "operation": "create", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Create cube: " + "A" * 3000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc1]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res1, tool_call_id="c1", name="create_primitive"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Created: " + "B" * 3000))
+
+        # Turn 2: Transform
+        tc2 = ToolCall(call_id="c2", tool_name="transform_object", arguments={"object_name": "Cube", "location": [0, 0, 2]})
+        res2 = json.dumps({
+            "name": "Cube",
+            "location": [0.0, 0.0, 2.0],
+            "verification": {"status": "PASS", "operation": "transform", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Move cube: " + "C" * 3000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc2]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res2, tool_call_id="c2", name="transform_object"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Moved: " + "D" * 3000))
+
+        # Turn 3: Delete
+        tc3 = ToolCall(call_id="c3", tool_name="delete_object", arguments={"name": "Cube"})
+        res3 = json.dumps({
+            "name": "Cube",
+            "verification": {"status": "PASS", "operation": "delete", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Delete cube: " + "E" * 3000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc3]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res3, tool_call_id="c3", name="delete_object"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Deleted: " + "F" * 3000))
+
+        # Retained turns
+        conv.add_message(ChatMessage(role=Role.USER, content="Retained Turn 4"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 4 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Active Turn 5"))
+
+        compacted_conv, was_compacted = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(was_compacted)
+
+        summary_text = compacted_conv.messages[1].content
+        self.assertIn("- Deleted Objects:\n  * 'Cube': deleted [PASS]", summary_text)
+        self.assertNotIn("- Verified Scene State:", summary_text)
+
+    def test_create_a_and_b_delete_a_compact_shows_b_active_and_a_deleted(self):
+        """create A + create B -> delete A -> compact -> B is preserved in active state, A in deleted."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        # Turn 1: Create A & B
+        tc_a = ToolCall(call_id="ca", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
+        res_a = json.dumps({
+            "name": "ObjA",
+            "verification": {"status": "PASS", "operation": "create", "target_name": "ObjA"},
+        })
+        tc_b = ToolCall(call_id="cb", tool_name="create_primitive", arguments={"primitive_type": "SPHERE"})
+        res_b = json.dumps({
+            "name": "ObjB",
+            "verification": {"status": "PASS", "operation": "create", "target_name": "ObjB"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Create ObjA & ObjB: " + "A" * 4000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc_a, tc_b]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res_a, tool_call_id="ca", name="create_primitive"))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res_b, tool_call_id="cb", name="create_primitive"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Created both: " + "B" * 4000))
+
+        # Turn 2: Delete A
+        tc_d = ToolCall(call_id="cd", tool_name="delete_object", arguments={"name": "ObjA"})
+        res_d = json.dumps({
+            "name": "ObjA",
+            "verification": {"status": "PASS", "operation": "delete", "target_name": "ObjA"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Delete ObjA: " + "C" * 4000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc_d]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res_d, tool_call_id="cd", name="delete_object"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Deleted ObjA: " + "D" * 4000))
+
+        # Retained turns
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 3 reply"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 4 active"))
+
+        compacted_conv, was_compacted = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(was_compacted)
+
+        summary_text = compacted_conv.messages[1].content
+        self.assertIn("- Verified Scene State:\n  * 'ObjB': create", summary_text)
+        self.assertIn("- Deleted Objects:\n  * 'ObjA': deleted [PASS]", summary_text)
+        self.assertNotIn("'ObjA': create", summary_text)
+
+    def test_delete_semantic_fail_not_removed_from_active_ledger(self):
+        """If delete semantic verification is FAIL, entity is NOT removed from active ledger."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        # Turn 1: Create Cube
+        tc1 = ToolCall(call_id="c1", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
+        res1 = json.dumps({
+            "name": "Cube",
+            "verification": {"status": "PASS", "operation": "create", "target_name": "Cube"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Create Cube: " + "A" * 4000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc1]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res1, tool_call_id="c1", name="create_primitive"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Created: " + "B" * 4000))
+
+        # Turn 2: Attempt Delete, but verification FAILS (e.g. object still exists)
+        tc2 = ToolCall(call_id="c2", tool_name="delete_object", arguments={"name": "Cube"})
+        res2 = json.dumps({
+            "name": "Cube",
+            "verification": {"status": "FAIL", "operation": "delete", "target_name": "Cube", "reason": "still exists"},
+        })
+        conv.add_message(ChatMessage(role=Role.USER, content="Delete Cube: " + "C" * 4000))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc2]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res2, tool_call_id="c2", name="delete_object"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Deletion failed: " + "D" * 4000))
+
+        # Retained turns
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 3 reply"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 4 active"))
+
+        compacted_conv, was_compacted = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(was_compacted)
+
+        summary_text = compacted_conv.messages[1].content
+        # Cube must STILL be in verified scene state because deletion failed verification!
+        self.assertIn("- Verified Scene State:\n  * 'Cube': create", summary_text)
+        self.assertNotIn("- Deleted Objects:", summary_text)
+        self.assertIn("delete_object ('Cube'): VERIFICATION_FAILED", summary_text)
+
+    def test_successive_compactions_1_2_3_never_counts_summary_as_user_turn(self):
+        """Successive compactions (1, 2, 3) must never miscount prior summary blocks as new user turns."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        # Seed initial 4 turns
+        for i in range(4):
+            conv.add_message(ChatMessage(role=Role.USER, content=f"Round 1 Task {i}: " + "A" * 3000))
+            conv.add_message(ChatMessage(role=Role.ASSISTANT, content=f"Round 1 Done {i}: " + "B" * 3000))
+
+        # --- COMPACTION 1 ---
+        c1, w1 = compact_conversation(conv, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(w1)
+        # Should have: SYSTEM, summary_user, ack_assistant, Turn 2, Turn 3
+        system_msg, prior_summary, turns = partition_conversation_into_turns(c1.messages)
+        self.assertIsNotNone(prior_summary)
+        self.assertEqual(len(turns), 2)  # Exactly 2 real user turns!
+
+        # Add only 1 new turn: should NOT trigger compaction because total real turns = 3 (1 older, 2 retained)
+        # but let's test adding 2 new heavy turns to reach 4 real turns
+        c1.add_message(ChatMessage(role=Role.USER, content="Round 2 Task 4: " + "C" * 3000))
+        c1.add_message(ChatMessage(role=Role.ASSISTANT, content="Round 2 Done 4: " + "D" * 3000))
+        c1.add_message(ChatMessage(role=Role.USER, content="Round 2 Task 5: " + "E" * 3000))
+        c1.add_message(ChatMessage(role=Role.ASSISTANT, content="Round 2 Done 5: " + "F" * 3000))
+
+        # Partition before Compaction 2:
+        _, prior_summary_c1, turns_c1 = partition_conversation_into_turns(c1.messages)
+        self.assertIsNotNone(prior_summary_c1)
+        self.assertEqual(len(turns_c1), 4)  # Exactly 4 real user turns (Turns 2, 3, 4, 5)
+
+        # --- COMPACTION 2 ---
+        c2, w2 = compact_conversation(c1, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(w2)
+        _, prior_summary_c2, turns_c2 = partition_conversation_into_turns(c2.messages)
+        self.assertIsNotNone(prior_summary_c2)
+        self.assertEqual(len(turns_c2), 2)  # Turns 4 & 5 retained!
+        self.assertEqual(turns_c2[0][0].content, "Round 2 Task 4: " + "C" * 3000)
+        self.assertEqual(turns_c2[1][0].content, "Round 2 Task 5: " + "E" * 3000)
+
+        # Marker should be present exactly once
+        marker_count = sum(1 for m in c2.messages if m.content and "[Context Summary & Scene Memory]" in m.content)
+        self.assertEqual(marker_count, 1)
+
+        # Add 2 more heavy turns for Compaction 3
+        c2.add_message(ChatMessage(role=Role.USER, content="Round 3 Task 6: " + "G" * 3000))
+        c2.add_message(ChatMessage(role=Role.ASSISTANT, content="Round 3 Done 6: " + "H" * 3000))
+        c2.add_message(ChatMessage(role=Role.USER, content="Round 3 Task 7: " + "I" * 3000))
+        c2.add_message(ChatMessage(role=Role.ASSISTANT, content="Round 3 Done 7: " + "J" * 3000))
+
+        # --- COMPACTION 3 ---
+        c3, w3 = compact_conversation(c2, trigger_chars=10000, retained_turns=2)
+        self.assertTrue(w3)
+        _, prior_summary_c3, turns_c3 = partition_conversation_into_turns(c3.messages)
+        self.assertIsNotNone(prior_summary_c3)
+        self.assertEqual(len(turns_c3), 2)  # Turns 6 & 7 retained!
+        self.assertEqual(turns_c3[0][0].content, "Round 3 Task 6: " + "G" * 3000)
+        self.assertEqual(turns_c3[1][0].content, "Round 3 Task 7: " + "I" * 3000)
+
+        marker_count_3 = sum(1 for m in c3.messages if m.content and "[Context Summary & Scene Memory]" in m.content)
+        self.assertEqual(marker_count_3, 1)
+
+        # Sequence validation passes across all
+        c1.validate_sequence()
+        c2.validate_sequence()
+        c3.validate_sequence()
+
 
 if __name__ == "__main__":
     unittest.main()
+
