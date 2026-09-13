@@ -92,7 +92,11 @@ class TransformMutator:
         # Update view layer and depsgraph
         bpy.context.view_layer.update()
 
+        actual_obj = bpy.data.objects.get(name)
+        exists_in_scene = actual_obj is not None
+
         after = {
+            "exists": exists_in_scene,
             "location": [round(float(v), 4) for v in obj.location],
             "rotation": [round(float(v), 4) for v in obj.rotation_euler],
             "scale": [round(float(v), 4) for v in obj.scale],
@@ -104,7 +108,9 @@ class TransformMutator:
         return {
             "object_name": name,
             "relative": bool(relative),
+            "exists": exists_in_scene,
             "before": before,
             "after": after,
+            "actual": after,
             "changed": changed_fields,
         }

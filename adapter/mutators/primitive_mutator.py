@@ -89,10 +89,16 @@ class PrimitiveMutator:
         # Record atomic undo step
         push_undo_step(f"AI: Create {p_type} ({obj.name})")
 
+        # Live scene lookup for snapshot verification
+        actual_obj = bpy.data.objects.get(obj.name)
+        exists_in_scene = actual_obj is not None
+
         return {
             "created": True,
+            "exists": exists_in_scene,
             "object_name": obj.name,
             "primitive_type": p_type,
+            "type": obj.type,
             "location": [round(v, 4) for v in obj.location],
             "rotation": [round(v, 4) for v in obj.rotation_euler],
             "scale": [round(v, 4) for v in obj.scale],

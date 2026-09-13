@@ -66,6 +66,7 @@ class ToolResult:
         error_type: str,
         message: str,
         details: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
     ) -> "ToolResult":
         """Factory for failed tool results with structured error."""
         error = ToolError(
@@ -73,4 +74,4 @@ class ToolResult:
             message=message,
             details=details or {},
         )
-        return cls(success=False, tool=tool, data=None, error=error)
+        return cls(success=False, tool=tool, data=data, error=error)

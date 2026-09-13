@@ -29,6 +29,7 @@ from core.types import ToolResult
 from agent.context_builder import ContextBuilder
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
+from agent.verifier import ChangeVerifier, build_change_set_from_result
 from agent.policy import (
     ApprovalDecision,
     ApprovalPolicy,
@@ -66,11 +67,17 @@ class AgentRuntime:
         worker: Optional[AgentWorker] = None,
         max_tool_rounds: int = 5,
         policy: Optional[ApprovalPolicy] = None,
+        verifier: Optional[Union[ChangeVerifier, bool]] = None,
     ):
         self.provider = provider
         self.dispatcher = dispatcher
         self.policy = policy or ApprovalPolicy()
         self.state_machine = AgentStateMachine()
+
+        if verifier is False:
+            self.verifier = None
+        else:
+            self.verifier = verifier if isinstance(verifier, ChangeVerifier) else ChangeVerifier()
 
         self.event_queue = event_queue or ThreadSafeEventQueue()
         self.worker = worker or AgentWorker(provider=self.provider, event_queue=self.event_queue)
@@ -122,6 +129,46 @@ class AgentRuntime:
     def stale_events_count(self) -> int:
         """Count of stale events rejected due to turn_id mismatch."""
         return self._stale_events_count
+
+    # -------------------------------------------------------------------------
+    # Execution & Verification Helper (M5)
+    # -------------------------------------------------------------------------
+
+    def _execute_and_verify(self, tool_call: ToolCall) -> ToolResult:
+        """Dispatch tool call on the main thread and verify mutation outcomes."""
+        tool_res = self.dispatcher.dispatch(tool_call)
+
+        if not tool_res.success or self.verifier is None:
+            return tool_res
+
+        change_set = build_change_set_from_result(
+            tool_name=tool_call.tool_name,
+            arguments=tool_call.arguments or {},
+            result_data=tool_res.data or {},
+        )
+        if change_set is None:
+            return tool_res
+
+        verif_result = self.verifier.verify(change_set)
+
+        if verif_result.passed:
+            data = dict(tool_res.data or {})
+            data["verification"] = verif_result.to_dict()
+            return ToolResult.ok(tool=tool_res.tool, data=data)
+        else:
+            verif_dict = verif_result.to_dict()
+            return ToolResult.fail(
+                tool=tool_res.tool,
+                error_type="VERIFICATION_FAILED",
+                message=verif_result.summary,
+                details={
+                    "verification": verif_dict,
+                    "mismatches": verif_result.mismatches,
+                },
+                data={
+                    "verification": verif_dict,
+                },
+            )
 
     # -------------------------------------------------------------------------
     # Asynchronous Event-Driven API (Phase 6 / M2.7)
@@ -420,7 +467,7 @@ class AgentRuntime:
                     return None
 
                 self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
-                tool_res = self.dispatcher.dispatch(tool_call)
+                tool_res = self._execute_and_verify(tool_call)
                 self._current_tool_results.append(tool_res)
 
                 args_str = (
@@ -479,7 +526,7 @@ class AgentRuntime:
                     self._last_result = error_result
                     self.event_queue.put(
                         AgentErrorEvent(
-                            error_type="TOOL_FAILURE",
+                            error_type=tool_res.error.type if tool_res.error else "TOOL_FAILURE",
                             message=tool_res.error.message,
                             turn_id=event.turn_id,
                             details=tool_res.error.details,
@@ -611,7 +658,7 @@ class AgentRuntime:
         # Transition to EXECUTING_TOOL and dispatch tool
         self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
         t_start = time.perf_counter()
-        tool_res = self.dispatcher.dispatch(pending.tool_call)
+        tool_res = self._execute_and_verify(pending.tool_call)
         if self._current_metrics:
             self._current_metrics.t_tools_duration += (time.perf_counter() - t_start)
         self._current_tool_results.append(tool_res)
@@ -661,7 +708,7 @@ class AgentRuntime:
             self._last_result = err_res
             self.event_queue.put(
                 AgentErrorEvent(
-                    error_type="TOOL_FAILURE",
+                    error_type=tool_res.error.type if tool_res.error else "TOOL_FAILURE",
                     message=tool_res.error.message,
                     turn_id=pending.turn_id,
                     details=tool_res.error.details,
@@ -867,7 +914,7 @@ class AgentRuntime:
 
                 for tc in tool_calls:
                     self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
-                    res = self.dispatcher.dispatch(tc)
+                    res = self._execute_and_verify(tc)
                     tool_results.append(res)
                     tc_content = (
                         json.dumps(res.data, ensure_ascii=False)
@@ -908,7 +955,7 @@ class AgentRuntime:
             tool_results: List[ToolResult] = []
             for tool_call in initial_response.tool_calls:
                 self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
-                result = self.dispatcher.dispatch(tool_call)
+                result = self._execute_and_verify(tool_call)
                 tool_results.append(result)
 
                 if not result.success:

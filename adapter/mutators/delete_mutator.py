@@ -46,8 +46,12 @@ class DeleteMutator:
         # Record atomic undo step
         push_undo_step(f"AI: Delete ({target_name})")
 
+        # Verify absence in live scene datablocks
+        still_exists = bpy.data.objects.get(target_name) is not None
+
         return {
-            "deleted": True,
+            "deleted": not still_exists,
+            "exists": still_exists,
             "object_name": target_name,
             "type": obj_type,
             "previous_state": previous_state,

@@ -89,12 +89,16 @@ def test_create_primitive():
     assert len(cube_obj.data.polygons) == 6
     assert list(cube_obj.location) == [1.0, 2.0, 3.0]
     assert res_cube.data["created"] is True
+    assert res_cube.data["exists"] is True
+    assert res_cube.data["type"] == "MESH"
     assert res_cube.data["vertex_count"] == 8
 
     # 2. Create Sphere
     res_sphere = adapter.create_primitive("SPHERE", name="MySphere", location=[0.0, 0.0, 0.0], size=1.0)
     assert res_sphere.success, f"Sphere creation failed: {res_sphere.error}"
     assert "MySphere" in bpy.data.objects
+    assert res_sphere.data["exists"] is True
+    assert res_sphere.data["type"] == "MESH"
     sphere_obj = bpy.data.objects["MySphere"]
     assert len(sphere_obj.data.vertices) > 200
     assert len(sphere_obj.data.polygons) > 200
@@ -103,6 +107,8 @@ def test_create_primitive():
     res_plane = adapter.create_primitive("PLANE", name="MyPlane", size=4.0)
     assert res_plane.success, f"Plane creation failed: {res_plane.error}"
     assert "MyPlane" in bpy.data.objects
+    assert res_plane.data["exists"] is True
+    assert res_plane.data["type"] == "MESH"
     plane_obj = bpy.data.objects["MyPlane"]
     assert len(plane_obj.data.vertices) == 4
     assert len(plane_obj.data.polygons) == 1
@@ -135,8 +141,11 @@ def test_transform_object():
     assert round(target.rotation_euler.z, 3) == 1.571
     assert list(target.scale) == [1.5, 1.5, 2.0]
     assert res1.data["changed"] == ["location", "rotation", "scale"]
+    assert res1.data["exists"] is True
     assert res1.data["before"]["location"] == [0.0, 0.0, 0.0]
     assert res1.data["after"]["location"] == [2.0, 3.0, 4.0]
+    assert res1.data["actual"]["location"] == [2.0, 3.0, 4.0]
+    assert res1.data["actual"]["exists"] is True
 
     # Relative transform
     res2 = adapter.transform_object(
@@ -149,6 +158,7 @@ def test_transform_object():
     assert list(target.location) == [3.0, 2.0, 4.0]
     assert list(target.scale) == [3.0, 1.5, 2.0]
     assert res2.data["relative"] is True
+    assert res2.data["exists"] is True
 
     # Missing object
     res_missing = adapter.transform_object(name="NonExistentObject", location=[1, 1, 1])
@@ -170,6 +180,7 @@ def test_delete_object():
     assert res_del.success, f"Delete failed: {res_del.error}"
     assert "DeleteTarget" not in bpy.data.objects
     assert res_del.data["deleted"] is True
+    assert res_del.data["exists"] is False
     assert res_del.data["object_name"] == "DeleteTarget"
 
     # Deleting again raises OBJECT_NOT_FOUND
