@@ -20,6 +20,12 @@ from adapter.readers.mesh_reader import (
     MeshReader,
     InvalidMeshDataTypeError,
 )
+from adapter.mutators import (
+    PrimitiveMutator,
+    InvalidPrimitiveTypeError,
+    TransformMutator,
+    DeleteMutator,
+)
 
 
 class ThreadSafetyViolationError(RuntimeError):
@@ -218,5 +224,135 @@ class BlenderAdapter:
                 tool=tool_name,
                 error_type="ADAPTER_INTERNAL_ERROR",
                 message=f"Unexpected error inspecting mesh '{object_name}': {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def create_primitive(
+        self,
+        primitive_type: str,
+        name: Optional[str] = None,
+        location: Optional[Any] = None,
+        rotation: Optional[Any] = None,
+        scale: Optional[Any] = None,
+        size: Optional[float] = None,
+    ) -> ToolResult:
+        """Create a new geometric primitive (CUBE, SPHERE, PLANE) in the scene.
+
+        Returns:
+            ToolResult conforming to create_primitive contract.
+        """
+        assert_main_thread()
+        tool_name = "create_primitive"
+
+        try:
+            data = PrimitiveMutator.create(
+                primitive_type=primitive_type,
+                name=name,
+                location=location,
+                rotation=rotation,
+                scale=scale,
+                size=size,
+            )
+            return ToolResult.ok(tool_name, data)
+        except InvalidPrimitiveTypeError as type_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_PRIMITIVE_TYPE",
+                message=str(type_err),
+                details={"primitive_type": str(primitive_type)},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error creating primitive '{primitive_type}': {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def transform_object(
+        self,
+        name: str,
+        location: Optional[Any] = None,
+        rotation: Optional[Any] = None,
+        scale: Optional[Any] = None,
+        relative: bool = False,
+    ) -> ToolResult:
+        """Transform object location, rotation, or scale.
+
+        Returns:
+            ToolResult conforming to transform_object contract.
+        """
+        assert_main_thread()
+        tool_name = "transform_object"
+
+        try:
+            data = TransformMutator.transform(
+                name=name,
+                location=location,
+                rotation=rotation,
+                scale=scale,
+                relative=relative,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ObjectNotFoundError as not_found:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="OBJECT_NOT_FOUND",
+                message=str(not_found),
+                details={"object_name": name},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"object_name": name},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error transforming object '{name}': {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def delete_object(self, name: str) -> ToolResult:
+        """Delete object by exact name.
+
+        Returns:
+            ToolResult conforming to delete_object contract.
+        """
+        assert_main_thread()
+        tool_name = "delete_object"
+
+        try:
+            data = DeleteMutator.delete(name=name)
+            return ToolResult.ok(tool_name, data)
+        except ObjectNotFoundError as not_found:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="OBJECT_NOT_FOUND",
+                message=str(not_found),
+                details={"object_name": name},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"object_name": name},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error deleting object '{name}': {str(exc)}",
                 details={"exception": type(exc).__name__},
             )

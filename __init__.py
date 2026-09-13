@@ -35,6 +35,9 @@ from .tools.read_only.inspect_selection import InspectSelectionTool
 from .tools.read_only.inspect_object import InspectObjectTool
 from .tools.read_only.inspect_material import InspectMaterialTool
 from .tools.read_only.inspect_mesh import InspectMeshTool
+from .tools.mutations.create_primitive import CreatePrimitiveTool
+from .tools.mutations.transform_object import TransformObjectTool
+from .tools.mutations.delete_object import DeleteObjectTool
 from .agent.mock_provider import MockProvider
 from .agent.dispatcher import ToolDispatcher
 from .agent.runtime import AgentRuntime
@@ -70,13 +73,16 @@ def register():
     register_keymaps()
     register_gpu_overlay()
 
-    # 2. Tool Registry & Readers
+    # 2. Tool Registry (Inspection & Safe Mutation Tools)
     registry = ToolRegistry()
     registry.register(InspectSceneTool())
     registry.register(InspectSelectionTool())
     registry.register(InspectObjectTool())
     registry.register(InspectMaterialTool())
     registry.register(InspectMeshTool())
+    registry.register(CreatePrimitiveTool())
+    registry.register(TransformObjectTool())
+    registry.register(DeleteObjectTool())
 
     # 3. Adapter & Dispatcher
     adapter = BlenderAdapter()
