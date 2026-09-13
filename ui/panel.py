@@ -22,11 +22,11 @@ class AISIDEBAR_PT_main_panel(Panel):
             return
 
         # ---------------------------------------------------------------------
-        # 1. Primary Action: Launch Modern Web UI
+        # 1. Primary Action: Launch In-Viewport AI HUD (Higgsfield Style)
         # ---------------------------------------------------------------------
         col = layout.column(align=True)
         col.scale_y = 1.4
-        col.operator("ai_sidebar.open_web_ui", text="✦ Open Web AI", icon="WINDOW")
+        col.operator("ai_sidebar.viewport_hud", text="✦ Open AI HUD", icon="WINDOW")
 
         hint_row = layout.row(align=True)
         hint_row.scale_y = 0.85

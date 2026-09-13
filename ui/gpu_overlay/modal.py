@@ -1,0 +1,286 @@
+"""Modal operator managing events, input trapping, and draw lifecycle for the GPU HUD."""
+
+import bpy
+from bpy.types import Operator
+
+from .state import overlay_state
+from .renderer import draw_overlay_hud
+
+_active_modal_operator = None
+
+
+class AISIDEBAR_OT_viewport_hud(Operator):
+    """Toggle the in-viewport floating AI HUD (Alt+Space)."""
+
+    bl_idname = "ai_sidebar.viewport_hud"
+    bl_label = "Blender AI HUD"
+    bl_description = "Toggle in-viewport floating AI HUD"
+
+    _draw_handler = None
+    _timer = None
+
+    @classmethod
+    def poll(cls, context):
+        return context.area and context.area.type == "VIEW_3D"
+
+    def invoke(self, context, event):
+        global _active_modal_operator
+
+        # If already running, toggle off cleanly
+        if overlay_state.is_open:
+            self.cleanup(context)
+            return {"FINISHED"}
+
+        overlay_state.is_open = True
+        _active_modal_operator = self
+
+        # 1. Register draw handler on 3D Viewport
+        self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            draw_overlay_hud, (context,), "WINDOW", "POST_PIXEL"
+        )
+
+        # 2. Start animation/sync timer
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.03, window=context.window)
+
+        # 3. Add modal handler
+        wm.modal_handler_add(self)
+
+        # Force redraw
+        self.tag_redraw_view3d(context)
+        return {"RUNNING_MODAL"}
+
+    def cleanup(self, context):
+        """Remove draw handler, timer, and reset overlay state."""
+        global _active_modal_operator
+        overlay_state.is_open = False
+        _active_modal_operator = None
+
+        if self._draw_handler is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, "WINDOW")
+            except Exception:
+                pass
+            self._draw_handler = None
+
+        if self._timer is not None:
+            try:
+                context.window_manager.event_timer_remove(self._timer)
+            except Exception:
+                pass
+            self._timer = None
+
+        self.tag_redraw_view3d(context)
+
+    @staticmethod
+    def tag_redraw_view3d(context):
+        """Safely tag 3D Viewport for redraw."""
+        try:
+            if context and context.area and context.area.type == "VIEW_3D":
+                context.area.tag_redraw()
+            elif context and context.screen:
+                for a in context.screen.areas:
+                    if a.type == "VIEW_3D":
+                        a.tag_redraw()
+        except Exception:
+            pass
+
+    def modal(self, context, event):
+        if not overlay_state.is_open:
+            self.cleanup(context)
+            return {"FINISHED"}
+
+        # ---------------------------------------------------------------------
+        # 1. Periodic Timer (Blink & Agent Sync)
+        # ---------------------------------------------------------------------
+        if event.type == "TIMER":
+            state_changed = overlay_state.update_blink()
+
+            # Sync with AgentRuntime
+            try:
+                from ... import get_runtime
+                runtime = get_runtime()
+                if runtime:
+                    is_proc = runtime.current_state.value in ("PROCESSING", "EXECUTING_TOOL")
+                    if is_proc != overlay_state.is_processing:
+                        overlay_state.is_processing = is_proc
+                        state_changed = True
+
+                    overlay_state.status_text = runtime.current_state.value
+                    if runtime.last_result and runtime.last_result.final_text:
+                        if overlay_state.last_response_text != runtime.last_result.final_text:
+                            overlay_state.last_response_text = runtime.last_result.final_text
+                            state_changed = True
+            except Exception:
+                pass
+
+            if state_changed:
+                self.tag_redraw_view3d(context)
+            return {"PASS_THROUGH"}
+
+        # ---------------------------------------------------------------------
+        # 2. Mouse Move & Hover Detection
+        # ---------------------------------------------------------------------
+        if event.type == "MOUSEMOVE":
+            hit = overlay_state.hit_test(event.mouse_region_x, event.mouse_region_y)
+            if hit != overlay_state.hover_element:
+                overlay_state.hover_element = hit
+                self.tag_redraw_view3d(context)
+
+            # If mouse is inside bar, swallow event to protect 3D scene underneath
+            if hit is not None:
+                return {"RUNNING_MODAL"}
+            return {"PASS_THROUGH"}
+
+        # ---------------------------------------------------------------------
+        # 3. Mouse Clicks
+        # ---------------------------------------------------------------------
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            hit = overlay_state.hit_test(event.mouse_region_x, event.mouse_region_y)
+            if hit == "send":
+                self.submit_current_prompt()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+            elif hit == "cancel":
+                self.cancel_current_turn()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+            elif hit in ("input", "bar"):
+                # Focus prompt
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            # Clicked outside bar: pass through to viewport
+            return {"PASS_THROUGH"}
+
+        # ---------------------------------------------------------------------
+        # 4. Keyboard Controls
+        # ---------------------------------------------------------------------
+        if event.value == "PRESS":
+            # Esc: Close or clear
+            if event.type == "ESC":
+                if overlay_state.prompt_text:
+                    overlay_state.reset_input()
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+                else:
+                    self.cleanup(context)
+                    return {"FINISHED"}
+
+            # Enter: Submit or Newline
+            if event.type == "RET":
+                if event.shift:
+                    overlay_state.insert_text("\n")
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+                else:
+                    self.submit_current_prompt()
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+
+            # Backspace & Delete
+            if event.type == "BACKSPACE":
+                overlay_state.delete_backward()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            if event.type == "DEL":
+                overlay_state.delete_forward()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            # Cursor Navigation
+            if event.type == "LEFT_ARROW":
+                overlay_state.move_cursor_left()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            if event.type == "RIGHT_ARROW":
+                overlay_state.move_cursor_right()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            if event.type == "HOME":
+                overlay_state.move_cursor_home()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            if event.type == "END":
+                overlay_state.move_cursor_end()
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            # Clipboard Paste (Ctrl + V)
+            if event.type == "V" and event.ctrl:
+                clip = context.window_manager.clipboard
+                if clip:
+                    overlay_state.insert_text(clip)
+                    self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            # Standard Text Character Input (includes Turkish & Unicode)
+            if event.unicode:
+                overlay_state.insert_text(event.unicode)
+                self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+
+            # Trap all other keys while HUD is open so Blender viewport shortcuts aren't fired accidentally
+            return {"RUNNING_MODAL"}
+
+        return {"PASS_THROUGH"}
+
+    def submit_current_prompt(self):
+        """Submit the prompt to AgentRuntime."""
+        prompt = overlay_state.prompt_text.strip()
+        if not prompt:
+            return
+        try:
+            from ... import get_runtime
+            runtime = get_runtime()
+            if runtime:
+                overlay_state.reset_input()
+                overlay_state.is_processing = True
+                overlay_state.status_text = "PROCESSING"
+                overlay_state.last_response_text = ""
+                runtime.submit_prompt(prompt)
+        except Exception:
+            pass
+
+    def cancel_current_turn(self):
+        """Cancel active agent operation."""
+        try:
+            from ... import get_runtime
+            runtime = get_runtime()
+            if runtime:
+                runtime.cancel_current_turn()
+                overlay_state.is_processing = False
+                overlay_state.status_text = "IDLE"
+        except Exception:
+            pass
+
+
+CLASSES = (
+    AISIDEBAR_OT_viewport_hud,
+)
+
+
+def register_modal():
+    for cls in CLASSES:
+        try:
+            bpy.utils.register_class(cls)
+        except (ValueError, RuntimeError):
+            pass
+
+
+def unregister_modal():
+    global _active_modal_operator
+    if _active_modal_operator:
+        try:
+            _active_modal_operator.cleanup(bpy.context)
+        except Exception:
+            pass
+    for cls in reversed(CLASSES):
+        try:
+            bpy.utils.unregister_class(cls)
+        except (ValueError, RuntimeError):
+            pass

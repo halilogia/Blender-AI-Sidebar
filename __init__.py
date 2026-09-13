@@ -27,6 +27,7 @@ from .ui.panel import register_panels, unregister_panels
 from .ui.keymap import register_keymaps, unregister_keymaps
 from .ui.header import register_header, unregister_header
 from .ui.web_launcher import register_web_launcher, unregister_web_launcher, start_web_server, stop_web_server
+from .ui.gpu_overlay import register as register_gpu_overlay, unregister as unregister_gpu_overlay
 from .ui.timer_bridge import TimerBridge
 from .adapter.blender_adapter import BlenderAdapter
 from .tools.registry import ToolRegistry
@@ -67,7 +68,7 @@ def register():
     if _runtime is not None or _timer_bridge is not None:
         unregister()
 
-    # 1. UI Preferences, Properties, Operators, Panels, Header, Keymaps & Web Launcher
+    # 1. UI Preferences, Properties, Operators, Panels, Header, Keymaps, Web Launcher & GPU Overlay
     register_preferences()
     register_properties()
     register_operators()
@@ -75,6 +76,7 @@ def register():
     register_header()
     register_keymaps()
     register_web_launcher()
+    register_gpu_overlay()
 
     # 2. Tool Registry & Readers
     registry = ToolRegistry()
@@ -118,6 +120,7 @@ def unregister():
         _runtime = None
 
     # 4. Unregister UI & Keymaps
+    unregister_gpu_overlay()
     unregister_web_launcher()
     unregister_keymaps()
     unregister_header()
