@@ -58,6 +58,7 @@ class VisualVerificationResult:
         """Serialize verification result to a deterministic, hygiene-safe dictionary."""
         d: Dict[str, Any] = {
             "status": self.status.value,
+            "passed": self.passed,
             "reason": self.reason,
             "expected_description": self.expected_description,
         }
@@ -394,6 +395,7 @@ class VisualVerifier:
         expected_description: str,
         image_id: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        turn_id: str = "visual_verify",
     ) -> VisualVerificationResult:
         """Execute visual verification only after semantic verification has passed.
 
@@ -417,4 +419,6 @@ class VisualVerifier:
             expected_description=expected_description,
             image_id=image_id,
             cancel_event=cancel_event,
+            turn_id=turn_id,
         )
+

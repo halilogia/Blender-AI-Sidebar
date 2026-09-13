@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Safe failure policy: `FAIL` and `UNCERTAIN` report visual discrepancies without triggering automatic mutation rollbacks.
   - Strict thread isolation: viewport capture and screenshot resolution remain on Blender main thread; worker thread handles HTTP/JSON/SSE.
   - Zero raw image bytes or base64 strings in history logs or serialized results (`to_dict()`).
-  - Added unit test suite `tests/unit/test_visual_verifier.py` (unit tests expanded to 365 tests).
+  - Automatic post-mutation visual verification wired into `AgentRuntime._execute_and_verify` when visual confirmation is requested by user prompt or runtime expectation.
+  - Added unit test suite `tests/unit/test_visual_verifier.py` (unit tests expanded to 375 tests).
   - Added Blender headless integration suite `tests/integration/test_visual_verification_integration.py` (master suite expanded to 17 suites).
 - **M7 Task 2: Multimodal Provider Integration**:
   - `ChatMessage` and `ProviderRequestContext` updated to support in-memory image attachments (`image_id` and `images: Mapping[str, bytes]`).

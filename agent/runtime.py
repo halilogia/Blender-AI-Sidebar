@@ -8,7 +8,7 @@ Zero Blender (bpy) dependencies. Pure Python.
 import json
 import time
 import threading
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from core.events import (
     AgentErrorEvent,
@@ -62,6 +62,29 @@ from agent.state_machine import AgentState, AgentStateMachine
 from agent.worker import AgentWorker
 
 
+VISUAL_VERIFY_KEYWORDS: Tuple[str, ...] = (
+    "visually verify",
+    "verify visually",
+    "visual verification",
+    "check visually",
+    "visual check",
+    "confirm visually",
+    "visual confirmation",
+    "inspect visually",
+    "visual inspect",
+    "visual inspection",
+    "görsel doğrula",
+    "görsel olarak doğrula",
+    "görsel kontrol",
+    "görsel denetim",
+    "görsel incele",
+    "görsel teyit",
+    "görsel olarak kontrol",
+    "görsel olarak incele",
+    "görsel olarak teyit",
+)
+
+
 class AgentRuntime:
     """Agent execution coordinator owning lifecycle state on the main thread."""
 
@@ -111,6 +134,7 @@ class AgentRuntime:
         self._current_turn_id: Optional[str] = None
         self._current_cancel_event: Optional[threading.Event] = None
         self._current_prompt: str = ""
+        self._expected_visual_description: Optional[str] = None
         self._current_tool_results: List[ToolResult] = []
         self._pending_approval: Optional[PendingApproval] = None
         self._current_metrics: Optional[TurnMetrics] = None
@@ -147,11 +171,26 @@ class AgentRuntime:
         """Count of stale events rejected due to turn_id mismatch."""
         return self._stale_events_count
 
+    def set_visual_verification_expectation(self, description: Optional[str]) -> None:
+        """Set or clear explicit expected visual description for subsequent mutations."""
+        self._expected_visual_description = description
+
+    def _should_verify_visually(self, prompt: Optional[str]) -> bool:
+        """Check if user prompt explicitly requests visual scene verification."""
+        if not prompt or not isinstance(prompt, str):
+            return False
+        prompt_lower = prompt.lower()
+        return any(kw in prompt_lower for kw in VISUAL_VERIFY_KEYWORDS)
+
     # -------------------------------------------------------------------------
-    # Execution & Verification Helper (M5)
+    # Execution & Verification Helper (M5 & M7)
     # -------------------------------------------------------------------------
 
-    def _execute_and_verify(self, tool_call: ToolCall) -> ToolResult:
+    def _execute_and_verify(
+        self,
+        tool_call: ToolCall,
+        expected_visual_description: Optional[str] = None,
+    ) -> ToolResult:
         """Dispatch tool call on the main thread and verify mutation outcomes."""
         tool_res = self.dispatcher.dispatch(tool_call)
 
@@ -182,11 +221,7 @@ class AgentRuntime:
 
         verif_result = self.verifier.verify(change_set)
 
-        if verif_result.passed:
-            data = dict(tool_res.data or {})
-            data["verification"] = verif_result.to_dict()
-            return ToolResult.ok(tool=tool_res.tool, data=data)
-        else:
+        if not verif_result.passed:
             verif_dict = verif_result.to_dict()
             return ToolResult.fail(
                 tool=tool_res.tool,
@@ -200,6 +235,51 @@ class AgentRuntime:
                     "verification": verif_dict,
                 },
             )
+
+        # Semantic verification PASS: build successful data
+        data = dict(tool_res.data or {})
+        data["verification"] = verif_result.to_dict()
+
+        # Check if visual scene verification should run after mutation
+        target_visual_desc = (
+            expected_visual_description
+            or self._expected_visual_description
+            or (self._current_prompt if self._should_verify_visually(self._current_prompt) else None)
+        )
+
+        if target_visual_desc and self.visual_verifier:
+            if self.visual_verifier.provider is None and self.provider is not None:
+                self.visual_verifier.provider = self.provider
+            try:
+                vis_result = self.visual_verifier.verify_after_mutation(
+                    semantic_result=verif_result,
+                    expected_description=target_visual_desc,
+                    image_id=None,
+                    cancel_event=self._current_cancel_event,
+                    turn_id=self._current_turn_id or "mutation_visual_verify",
+                )
+                data["visual_verification"] = vis_result.to_dict()
+            except ImageResolutionError as exc:
+                data["visual_verification"] = VisualVerificationResult(
+                    status=VisualVerificationStatus.UNCERTAIN,
+                    reason=f"Visual verification failed: Image resolution failed for '{exc.image_id}'.",
+                    expected_description=target_visual_desc,
+                    image_id=exc.image_id,
+                    details={"error_type": "IMAGE_NOT_FOUND", "message": str(exc)},
+                ).to_dict()
+
+        return ToolResult.ok(tool=tool_res.tool, data=data)
+
+    def execute_tool_call(
+        self,
+        tool_call: ToolCall,
+        expected_visual_description: Optional[str] = None,
+    ) -> ToolResult:
+        """Execute and verify a tool call directly on the main thread."""
+        return self._execute_and_verify(
+            tool_call=tool_call,
+            expected_visual_description=expected_visual_description,
+        )
 
     def verify_visual(
         self,
@@ -236,7 +316,12 @@ class AgentRuntime:
                     return None
         return None
 
-    def submit_prompt(self, prompt: str, image_id: Optional[str] = None) -> str:
+    def submit_prompt(
+        self,
+        prompt: str,
+        image_id: Optional[str] = None,
+        expected_visual_description: Optional[str] = None,
+    ) -> str:
         """Submit a prompt for asynchronous background processing.
 
         Allocates a monotonic turn_id, transitions to PROCESSING,
@@ -245,6 +330,7 @@ class AgentRuntime:
         Args:
             prompt: User natural language prompt.
             image_id: Optional in-memory image identifier for multimodal turns.
+            expected_visual_description: Optional target visual description for post-mutation verification.
 
         Returns:
             The allocated turn_id string.
@@ -257,6 +343,7 @@ class AgentRuntime:
         turn_id = f"turn_{self._turn_counter}"
         self._current_turn_id = turn_id
         self._current_prompt = prompt
+        self._expected_visual_description = expected_visual_description
         self._current_tool_results = []
         self._current_tool_round = 0
         self._streaming_text = ""
@@ -578,11 +665,11 @@ class AgentRuntime:
                     )
                 detail_str = f"Tool: {tool_call.tool_name}\nArguments:\n{args_str}\n\nResult:\n{res_str}"
 
-                image_id = (
-                    tool_res.data.get("image_id")
-                    if (tool_res.success and isinstance(tool_res.data, dict))
-                    else None
-                )
+                image_id = None
+                if tool_res.success and isinstance(tool_res.data, dict):
+                    image_id = tool_res.data.get("image_id")
+                    if not image_id and isinstance(tool_res.data.get("visual_verification"), dict):
+                        image_id = tool_res.data["visual_verification"].get("image_id")
 
                 # Append tool result to Conversation
                 self.conversation.add_message(
@@ -802,12 +889,19 @@ class AgentRuntime:
             tool_content = json.dumps({"error": tool_res.error.message, "type": tool_res.error.type}, ensure_ascii=False)
         detail_str = f"Tool: {pending.tool_name} (Approved)\nArguments:\n{args_str}\n\nResult:\n{res_str}"
 
+        image_id = None
+        if tool_res.success and isinstance(tool_res.data, dict):
+            image_id = tool_res.data.get("image_id")
+            if not image_id and isinstance(tool_res.data.get("visual_verification"), dict):
+                image_id = tool_res.data["visual_verification"].get("image_id")
+
         self.conversation.add_message(
             ChatMessage(
                 role=Role.TOOL,
                 content=tool_content,
                 tool_call_id=pending.tool_call.call_id,
                 name=pending.tool_name,
+                image_id=image_id,
             )
         )
 
@@ -1028,6 +1122,8 @@ class AgentRuntime:
         """Clear session conversation and tool execution history."""
         self.history.clear()
         self.conversation.clear()
+        self._current_prompt = ""
+        self._expected_visual_description = None
 
     def shutdown(self) -> None:
         """Gracefully terminate background workers and queue."""
@@ -1040,11 +1136,17 @@ class AgentRuntime:
     # Synchronous Execution API (Phase 5 / M2 Compatibility)
     # -------------------------------------------------------------------------
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(
+        self,
+        prompt: str,
+        expected_visual_description: Optional[str] = None,
+    ) -> AgentResult:
         """Execute a full turn synchronously.
 
         Supports both MockProvider (generate) and real providers (stream_chat).
         """
+        self._current_prompt = prompt
+        self._expected_visual_description = expected_visual_description
         if hasattr(self.provider, "stream_chat"):
             self.state_machine.transition_to(AgentState.PROCESSING)
             self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt))
@@ -1109,12 +1211,19 @@ class AgentRuntime:
                         if res.success
                         else json.dumps({"error": res.error.message, "type": res.error.type}, ensure_ascii=False)
                     )
+                    tc_image_id = None
+                    if res.success and isinstance(res.data, dict):
+                        tc_image_id = res.data.get("image_id")
+                        if not tc_image_id and isinstance(res.data.get("visual_verification"), dict):
+                            tc_image_id = res.data["visual_verification"].get("image_id")
+
                     self.conversation.add_message(
                         ChatMessage(
                             role=Role.TOOL,
                             content=tc_content,
                             tool_call_id=tc.call_id,
                             name=tc.tool_name,
+                            image_id=tc_image_id,
                         )
                     )
 
@@ -1171,4 +1280,6 @@ class AgentRuntime:
         """Reset the runtime and state machine."""
         self.cancel_current_turn()
         self.conversation.clear()
+        self._current_prompt = ""
+        self._expected_visual_description = None
         self.state_machine.reset()

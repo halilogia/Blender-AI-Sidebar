@@ -431,6 +431,335 @@ class TestAgentRuntimeVisualVerification(unittest.TestCase):
         self.assertIn("visual_verification", result.data)
         self.assertEqual(result.data["visual_verification"]["status"], "PASS")
 
+    def _create_mock_mutation_dispatcher(self, mock_adapter, object_exists: bool = True):
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.adapter = mock_adapter
+        mock_dispatcher.dispatch.return_value = ToolResult.ok(
+            "create_primitive",
+            {
+                "exists": object_exists,
+                "name": "Cube",
+                "primitive_type": "CUBE",
+                "location": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "dimensions": [2.0, 2.0, 2.0],
+                "vertex_count": 8 if object_exists else 0,
+                "polygon_count": 6 if object_exists else 0,
+            },
+        )
+        return mock_dispatcher
+
+    def test_mutation_semantic_pass_and_visual_pass(self):
+        """Mutation passes semantic verification, then visual verification runs and returns PASS."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+        mock_provider.stream_chat.return_value = [
+            TextDelta(turn_id="turn_v1", text='{"status": "PASS", "reason": "Cube visually confirmed in viewport."}')
+        ]
+
+        png_data = make_dummy_png()
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_mut_1", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = png_data
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A newly created cube at origin")
+
+        tool_call = ToolCall(
+            call_id="call_m1",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertIn("verification", result.data)
+        self.assertTrue(result.data["verification"]["passed"])
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "PASS")
+        self.assertEqual(result.data["visual_verification"]["reason"], "Cube visually confirmed in viewport.")
+        self.assertTrue(result.data["visual_verification"]["passed"])
+        self.assertEqual(mock_provider.stream_chat.call_count, 1)
+
+    def test_mutation_semantic_pass_and_visual_fail_no_rollback(self):
+        """Mutation passes semantic verification, visual verification returns FAIL without rollback."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+        mock_provider.stream_chat.return_value = [
+            TextDelta(turn_id="turn_v1", text='{"status": "FAIL", "reason": "Cube is occluded by foreground object."}')
+        ]
+
+        png_data = make_dummy_png()
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_mut_2", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = png_data
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A clearly visible cube")
+
+        tool_call = ToolCall(
+            call_id="call_m2",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        # RNA semantic verification still passed
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["verification"]["passed"])
+        # Visual verification flagged FAIL without aborting or rolling back
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "FAIL")
+        self.assertFalse(result.data["visual_verification"]["passed"])
+        self.assertIn("occluded", result.data["visual_verification"]["reason"])
+
+    def test_mutation_semantic_pass_and_visual_uncertain_no_rollback(self):
+        """Mutation passes semantic verification, visual verification returns UNCERTAIN without rollback."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+        mock_provider.stream_chat.return_value = [
+            TextDelta(turn_id="turn_v1", text='{"status": "UNCERTAIN", "reason": "Extreme camera angle makes confirmation ambiguous."}')
+        ]
+
+        png_data = make_dummy_png()
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_mut_3", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = png_data
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A cube in view")
+
+        tool_call = ToolCall(
+            call_id="call_m3",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["verification"]["passed"])
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "UNCERTAIN")
+        self.assertFalse(result.data["visual_verification"]["passed"])
+
+    def test_mutation_semantic_fail_skips_visual_verifier(self):
+        """When semantic verification fails, visual verifier is NEVER executed."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+
+        mock_adapter = MagicMock()
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=False)
+
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A cube")
+
+        tool_call = ToolCall(
+            call_id="call_m4",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error.type, "VERIFICATION_FAILED")
+        # Visual verifier and provider stream MUST NOT have been called
+        self.assertEqual(mock_provider.stream_chat.call_count, 0)
+        self.assertEqual(mock_adapter.capture_viewport.call_count, 0)
+
+    def test_mutation_without_visual_request_does_not_trigger_visual_verifier(self):
+        """Normal mutation without visual verification intent does not invoke vision pipeline."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+
+        mock_adapter = MagicMock()
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        # No expectation set, prompt is plain text without visual keywords
+        runtime._current_prompt = "Create a cube at the center of the scene"
+
+        tool_call = ToolCall(
+            call_id="call_m5",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertIn("verification", result.data)
+        self.assertNotIn("visual_verification", result.data)
+        self.assertEqual(mock_provider.stream_chat.call_count, 0)
+        self.assertEqual(mock_adapter.capture_viewport.call_count, 0)
+
+    def test_mutation_visual_verification_from_prompt_keywords_english(self):
+        """Prompt containing 'verify visually' automatically triggers post-mutation visual verification."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+        mock_provider.stream_chat.return_value = [
+            TextDelta(turn_id="turn_v1", text='{"status": "PASS", "reason": "Verified visually from prompt."}')
+        ]
+
+        png_data = make_dummy_png()
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_kw_1", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = png_data
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime._current_prompt = "Create a cube at 0,0,0 and verify visually"
+
+        tool_call = ToolCall(
+            call_id="call_m6",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "PASS")
+        self.assertEqual(mock_provider.stream_chat.call_count, 1)
+
+    def test_mutation_visual_verification_from_prompt_keywords_turkish(self):
+        """Prompt containing 'görsel olarak doğrula' automatically triggers post-mutation visual verification."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+        mock_provider.stream_chat.return_value = [
+            TextDelta(turn_id="turn_v1", text='{"status": "PASS", "reason": "Görsel olarak doğrulandı."}')
+        ]
+
+        png_data = make_dummy_png()
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_kw_2", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = png_data
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime._current_prompt = "Sahneye bir küp ekle ve görsel olarak doğrula"
+
+        tool_call = ToolCall(
+            call_id="call_m7",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "PASS")
+
+    def test_mutation_visual_verification_unsupported_provider(self):
+        """Unsupported provider produces UNCERTAIN without rolling back verified mutation."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = False
+
+        mock_adapter = MagicMock()
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A cube")
+
+        tool_call = ToolCall(
+            call_id="call_m8",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["verification"]["passed"])
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "UNCERTAIN")
+        self.assertEqual(result.data["visual_verification"]["details"].get("error_type"), "PROVIDER_UNSUPPORTED")
+
+    def test_mutation_visual_verification_viewport_unavailable(self):
+        """Viewport capture failure yields UNCERTAIN without rolling back verified mutation."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.fail(
+            tool="capture_viewport",
+            error_type="CAPTURE_FAILED",
+            message="Offscreen buffer failed",
+        )
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A cube")
+
+        tool_call = ToolCall(
+            call_id="call_m9",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["verification"]["passed"])
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "UNCERTAIN")
+        self.assertEqual(result.data["visual_verification"]["details"].get("error_type"), "VIEWPORT_UNAVAILABLE")
+
+    def test_mutation_visual_verification_image_resolution_failure(self):
+        """Missing image in cache returns UNCERTAIN with IMAGE_NOT_FOUND without crashing."""
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal = True
+
+        mock_adapter = MagicMock()
+        mock_adapter.capture_viewport.return_value = ToolResult.ok(
+            "capture_viewport",
+            {"image_id": "vp_missing_99", "width": 512, "height": 512},
+        )
+        mock_adapter.get_viewport_screenshot.return_value = None  # Missing from cache
+
+        mock_dispatcher = self._create_mock_mutation_dispatcher(mock_adapter, object_exists=True)
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        runtime.set_visual_verification_expectation("A cube")
+
+        tool_call = ToolCall(
+            call_id="call_m10",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "location": [0.0, 0.0, 0.0]},
+        )
+
+        result = runtime._execute_and_verify(tool_call)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["verification"]["passed"])
+        self.assertIn("visual_verification", result.data)
+        self.assertEqual(result.data["visual_verification"]["status"], "UNCERTAIN")
+        self.assertEqual(result.data["visual_verification"]["details"].get("error_type"), "IMAGE_NOT_FOUND")
+
 
 if __name__ == "__main__":
     unittest.main()
+
