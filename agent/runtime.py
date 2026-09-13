@@ -316,6 +316,32 @@ class AgentRuntime:
                     return None
         return None
 
+    def _maybe_compact_context(self) -> bool:
+        """Apply deterministic rolling memory compaction if context exceeds trigger threshold.
+
+        Guarantees:
+        - Only executed when not awaiting approval and not executing tools.
+        - Preserves SYSTEM message and the last 2 complete turns.
+        - Never mutates RuntimeHistory.
+        - Strips expired image_ids from older compacted turns.
+        - Retains active turn image_ids.
+        """
+        if self._pending_approval is not None:
+            return False
+        if self.state_machine.current_state in (AgentState.PENDING_APPROVAL, AgentState.EXECUTING_TOOL):
+            return False
+
+        from agent.memory import compact_conversation, COMPACTION_TRIGGER_CHARS, RETAINED_TURNS_COUNT
+
+        compacted_conv, was_compacted = compact_conversation(
+            self.conversation,
+            trigger_chars=COMPACTION_TRIGGER_CHARS,
+            retained_turns=RETAINED_TURNS_COUNT,
+        )
+        if was_compacted:
+            self.conversation = compacted_conv
+        return was_compacted
+
     def submit_prompt(
         self,
         prompt: str,
@@ -352,6 +378,9 @@ class AgentRuntime:
 
         # Record user prompt in session Conversation
         self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt, image_id=image_id))
+
+        # Check for pre-flight context compaction before worker dispatch
+        self._maybe_compact_context()
 
         self.state_machine.transition_to(AgentState.PROCESSING)
         self.event_queue.put(PromptSubmittedEvent(prompt=prompt, turn_id=turn_id))
@@ -1153,6 +1182,8 @@ class AgentRuntime:
             tool_results: List[ToolResult] = []
             current_round = 0
             tools = self.dispatcher.registry.list()
+
+            self._maybe_compact_context()
 
             while True:
                 context = ContextBuilder.build(conversation=self.conversation, tools=tools)

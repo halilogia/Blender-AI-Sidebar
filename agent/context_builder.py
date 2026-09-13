@@ -111,6 +111,7 @@ class ContextBuilder:
         max_context_chars: int = MAX_CONTEXT_CHARS,
         image_resolver: Optional[Callable[[str], Optional[bytes]]] = None,
         images: Optional[Mapping[str, bytes]] = None,
+        compact_threshold: Optional[int] = None,
     ) -> ProviderRequestContext:
         """Construct a ProviderRequestContext respecting character safety cap.
 
@@ -121,6 +122,7 @@ class ContextBuilder:
             max_context_chars: Context safety limit in characters (default 15,000).
             image_resolver: Optional callable (image_id -> raw bytes) to fetch in-memory images.
             images: Optional pre-resolved mapping of image_id -> raw PNG bytes.
+            compact_threshold: Optional threshold to run rolling memory compaction prior to build.
 
         Returns:
             ProviderRequestContext with normalized messages, mapped tools, and resolved images.
@@ -132,8 +134,13 @@ class ContextBuilder:
             else DEFAULT_SYSTEM_PROMPT
         )
 
-        # 2. Extract conversation messages preserving order
-        raw_messages: List[ChatMessage] = conversation.messages if conversation else []
+        # 2. Extract conversation messages preserving order (applying optional pre-compaction)
+        conv = conversation
+        if conv is not None and compact_threshold is not None:
+            from agent.memory import compact_conversation
+            conv, _ = compact_conversation(conv, trigger_chars=compact_threshold)
+
+        raw_messages: List[ChatMessage] = conv.messages if conv else []
 
         # 3. Handle System message insertion / override
         assembled: List[ChatMessage] = []
