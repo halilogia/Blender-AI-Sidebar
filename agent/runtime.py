@@ -148,7 +148,6 @@ class AgentRuntime:
         self._current_tool_results: List[ToolResult] = []
         self._pending_approval: Optional[PendingApproval] = None
         self._pending_plan_review = None
-        self._active_plan_token: Optional[str] = None
         self._consumed_plan_tokens = set()
         self._current_metrics: Optional[TurnMetrics] = None
         self._last_result: Optional[AgentResult] = None
@@ -353,12 +352,8 @@ class AgentRuntime:
 
     def _execute_approved_plan(self, review: Any) -> Any:
         token = review.approval_id
-        self._active_plan_token = token
         try:
             from agent.plan_executor import PlanExecutor
-
-            def batch_hook(step, tool):
-                return getattr(step, "_plan_token", None) == token or True
 
             executor = PlanExecutor(
                 registry=self.dispatcher.registry,
@@ -367,12 +362,11 @@ class AgentRuntime:
                 verifier=self.verifier,
                 visual_verifier=self.visual_verifier,
                 policy=None,
-                approval_hook=batch_hook,
+                approval_hook=None,
             )
             summary = executor.execute_plan(review.plan)
             return summary
         finally:
-            self._active_plan_token = None
             self._consumed_plan_tokens.add(token)
 
     def approve_plan(self, approval_id: str) -> Any:
@@ -566,7 +560,6 @@ class AgentRuntime:
         self._current_tool_results = []
         self._pending_approval = None
         self._pending_plan_review = None
-        self._active_plan_token = None
         self._current_tool_round = 0
         self._streaming_text = ""
         return True
@@ -582,7 +575,6 @@ class AgentRuntime:
         self._current_tool_results = []
         self._pending_approval = None
         self._pending_plan_review = None
-        self._active_plan_token = None
         self._last_result = None
 
     def submit_prompt(
@@ -1086,7 +1078,6 @@ class AgentRuntime:
         """Cancel the currently active turn, discarding pending events and approvals."""
         self._pending_approval = None
         self._pending_plan_review = None
-        self._active_plan_token = None
         if self._current_turn_id is not None:
             if self._current_cancel_event:
                 self._current_cancel_event.set()

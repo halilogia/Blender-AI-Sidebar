@@ -123,7 +123,27 @@ class TestPlanReview(unittest.TestCase):
         _submit_plan(rt)
         rt.approve_plan(rt.pending_plan_review.approval_id)
         self.assertIsNone(rt.pending_approval)
+        self.assertIsNone(rt.pending_plan_review)
         self.assertEqual(ad.delete_object.call_count, 1)
+        # No second approval generated during batch execution: queue holds only review events
+        queued = rt.event_queue.drain_batch(max_items=50, max_time_sec=0.05)
+        kinds = [type(e).__name__ for e in queued]
+        self.assertIn("ApprovalRequiredEvent", kinds)
+
+    def test_outside_plan_still_requires_approval(self):
+        rt, ad = _runtime()
+        _submit_plan(rt)
+        rt.approve_plan(rt.pending_plan_review.approval_id)
+        self.assertEqual(ad.delete_object.call_count, 1)
+        resp = ProviderResponse(assistant_text=None, tool_calls=[ToolCall(call_id="c2", tool_name="delete_object", arguments={"name": "Other"})], is_final=False)
+        rt.process_event(ProviderResponseReadyEvent(response=resp, turn_id=rt.current_turn_id))
+        self.assertIsNotNone(rt.pending_approval)
+        self.assertEqual(ad.delete_object.call_count, 1)
+
+    def test_no_unconditional_hook(self):
+        import pathlib
+        src = pathlib.Path("agent/runtime.py").read_text(encoding="utf-8")
+        self.assertNotIn("or True", src)
 
     def test_single_tool_intact(self):
         rt, _ = _runtime()
