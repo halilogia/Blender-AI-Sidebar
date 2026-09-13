@@ -16,6 +16,8 @@ COMPACTION_TRIGGER_CHARS: int = 10000
 RETAINED_TURNS_COUNT: int = 2
 SUMMARY_MARKER: str = "[Context Summary & Scene Memory]"
 PRUNE_THRESHOLD_CHARS: int = 300
+SESSION_MEMORY_SCHEMA_VERSION: int = 1
+SESSION_MEMORY_PROPERTY_NAME: str = "ai_sidebar_session_memory"
 
 READ_ONLY_INSPECTION_TOOLS = {
     "inspect_mesh",
@@ -521,6 +523,108 @@ class RollingMemory:
             content="Understood. I have recorded the previous tasks and verified scene state in memory.",
         )
         return [summary_user, ack_assistant]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize rolling memory to a deterministic dictionary for persistence."""
+        return {
+            "schema_version": SESSION_MEMORY_SCHEMA_VERSION,
+            "tasks": list(self.tasks),
+            "verified_mutations": {
+                k: dict(v) for k, v in sorted(self.verified_mutations.items())
+            },
+            "deleted_entities": sorted(list(set(self.deleted_entities))),
+            "inspections": list(self.inspections),
+            "errors": list(self.errors),
+            "last_visual_verification": (
+                dict(self.last_visual_verification) if self.last_visual_verification else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> Optional["RollingMemory"]:
+        """Deserialize rolling memory from a dictionary with strict validation and backwards compatibility.
+
+        Returns None if data is invalid, corrupted, or unsupported schema.
+        """
+        if not isinstance(data, dict):
+            return None
+
+        version = data.get("schema_version")
+        if version != SESSION_MEMORY_SCHEMA_VERSION:
+            if version is None or not isinstance(version, int) or version < 1:
+                return None
+            if version > SESSION_MEMORY_SCHEMA_VERSION:
+                return None
+
+        mem = cls()
+
+        # Tasks
+        tasks = data.get("tasks")
+        if isinstance(tasks, list):
+            mem.tasks = [str(t) for t in tasks if isinstance(t, str)]
+
+        # Verified mutations
+        muts = data.get("verified_mutations")
+        if isinstance(muts, dict):
+            for target, item in muts.items():
+                if isinstance(target, str) and isinstance(item, dict):
+                    # Sanitize: ensure no secrets or image data leaked
+                    clean_item = {
+                        k: v for k, v in item.items()
+                        if k not in ("api_key", "secret", "image_id", "bytes")
+                    }
+                    mem.verified_mutations[target] = clean_item
+
+        # Deleted entities
+        dels = data.get("deleted_entities")
+        if isinstance(dels, list):
+            mem.deleted_entities = [str(d) for d in dels if isinstance(d, str)]
+
+        # Inspections
+        insps = data.get("inspections")
+        if isinstance(insps, list):
+            mem.inspections = [str(i) for i in insps if isinstance(i, str)]
+
+        # Errors
+        errs = data.get("errors")
+        if isinstance(errs, list):
+            mem.errors = [str(e) for e in errs if isinstance(e, str)]
+
+        # Visual verification
+        vis = data.get("last_visual_verification")
+        if isinstance(vis, dict):
+            mem.last_visual_verification = {
+                "decision": str(vis.get("decision", "UNKNOWN")),
+                "rationale": str(vis.get("rationale", ""))[:120],
+            }
+
+        return mem
+
+
+def serialize_session_memory(memory: RollingMemory) -> str:
+    """Serialize RollingMemory to a clean JSON string ready for Blender custom property storage."""
+    return json.dumps(memory.to_dict(), ensure_ascii=False)
+
+
+def deserialize_session_memory(raw_payload: Any) -> Optional[RollingMemory]:
+    """Deserialize RollingMemory from a raw Blender property (JSON string or dict).
+
+    Returns None on corrupted, empty, or invalid data.
+    """
+    if not raw_payload:
+        return None
+
+    if isinstance(raw_payload, str):
+        try:
+            data = json.loads(raw_payload)
+        except Exception:
+            return None
+    elif isinstance(raw_payload, dict):
+        data = raw_payload
+    else:
+        return None
+
+    return RollingMemory.from_dict(data)
 
 
 def partition_conversation_into_turns(

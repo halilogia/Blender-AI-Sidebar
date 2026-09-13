@@ -162,11 +162,35 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 - [ ] Structured multi-step execution plan generated prior to complex scene edits.
 - [ ] User review and batch approval before initiating multiple sequential tool calls.
 
-### Milestone 8: Context Compaction & Extended Chat Sessions
-- [ ] Rolling memory window with automated summarization of older conversational turns.
-- [ ] Selective tool result pruning (removing verbose mesh vertex dumps once inspected).
-- [ ] Multi-turn session persistence across `.blend` file reloads.
+### Milestone 8: Context Compaction & Rolling Memory (COMPLETED)
+- [x] **M8 Task 1: Context Compaction Architecture / Minimal Design**:
+  - Deterministic context budget guard and compaction triggers.
+  - Safe tool-call / tool-result sequence preservation.
+  - Architectural decoupling between active conversational context and historical rolling memory.
+- [x] **M8 Task 2: Rolling Memory Window & State Compaction**:
+  - Pure Python `RollingMemory` tracking user tasks, verified mutations, deleted entities, read inspections, and errors.
+  - Scene entity lifecycle consistency: successful `delete_object` operations strictly remove objects from verified living state into `deleted_entities`.
+  - Deterministic summary injection preserving `validate_sequence()` integrity without LLM summarization overhead.
+- [x] **M8 Task 3: Selective Tool Result Pruning**:
+  - Deterministic truncation of verbose JSON dumps in older inspected read-only results (`inspect_mesh`, `inspect_scene`, `inspect_object`, etc.).
+  - Preserves recent turns and active turns verbatim.
+  - Maintains strict `(ASSISTANT tool_calls) -> (TOOL result)` sequence validity and valid JSON structures.
+- [x] **M8 Task 4: .blend Reload Session Persistence**:
+  - Blender-native session state persistence via active Scene custom property (`scene["ai_sidebar_session_memory"]`).
+  - Zero external database or JSON file dependencies; zero secrets, credentials, or raw image bytes persisted.
+  - Integrated with `bpy.app.handlers.save_pre` and `bpy.app.handlers.load_post` executing strictly on Blender's main thread.
+  - Safe deserialization with schema version marker (`schema_version = 1`) and graceful fallback for missing or corrupted data.
+  - 419 pure Python unit tests and 18/18 headless Blender integration suites passing (`test_session_persistence.py`).
+
+---
+
+## Planned Future Milestones
+
+### Milestone 4.2: High-Level Plan Review (Tier 1)
+- [ ] Structured multi-step execution plan generated prior to complex scene edits.
+- [ ] User review and batch approval before initiating multiple sequential tool calls.
 
 ### Milestone 9: Text-to-3D Asset Generation Integration
 - [ ] External 3D generation API bridge (Tripo3D, Meshy, Rodin, Trellis).
 - [ ] `generate_3d_asset` tool dispatching prompt to text-to-3D service and automatically importing generated `.glb`/`.obj` mesh into active scene.
+

@@ -22,6 +22,7 @@ TESTS = [
     "tests/integration/test_viewport_capture.py",
     "tests/integration/test_multimodal_integration.py",
     "tests/integration/test_visual_verification_integration.py",
+    "tests/integration/test_session_persistence.py",
 ]
 
 BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"

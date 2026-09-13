@@ -354,6 +354,92 @@ class AgentRuntime:
             self.conversation = compacted_conv
         return was_pruned or was_compacted
 
+    def export_session_memory(self):
+        """Export current session's rolling memory for .blend persistence.
+
+        Extracts tasks, verified mutations, deleted entities, inspections,
+        and visual verifications from active conversation.
+        Returns None if session has no recorded activity.
+        """
+        if not self.conversation or not self.conversation.messages:
+            return None
+
+        from agent.memory import RollingMemory, partition_conversation_into_turns
+
+        system_msg, prior_summary, turn_clusters = partition_conversation_into_turns(
+            self.conversation.messages
+        )
+
+        memory = RollingMemory()
+        if prior_summary:
+            memory.add_turn_cluster(prior_summary)
+        for cluster in turn_clusters:
+            memory.add_turn_cluster(cluster)
+
+        if (
+            not memory.tasks
+            and not memory.verified_mutations
+            and not memory.deleted_entities
+            and not memory.inspections
+            and not memory.errors
+            and not memory.last_visual_verification
+        ):
+            return None
+
+        return memory
+
+    def restore_session_memory(self, memory) -> bool:
+        """Restore session memory from persisted .blend state.
+
+        Populates conversation with SYSTEM message and deterministic rolling memory summary.
+        Returns True if memory was restored, False if empty/skipped.
+        """
+        if memory is None:
+            return False
+
+        from agent.models import ChatMessage, Conversation, Role
+        from agent.context_builder import DEFAULT_SYSTEM_PROMPT
+
+        if (
+            not memory.tasks
+            and not memory.verified_mutations
+            and not memory.deleted_entities
+            and not memory.inspections
+            and not memory.errors
+            and not memory.last_visual_verification
+        ):
+            return False
+
+        sys_content = DEFAULT_SYSTEM_PROMPT
+        if self.conversation and self.conversation.messages and self.conversation.messages[0].role == Role.SYSTEM:
+            sys_content = self.conversation.messages[0].content or DEFAULT_SYSTEM_PROMPT
+
+        new_conv = Conversation()
+        new_conv.add_message(ChatMessage(role=Role.SYSTEM, content=sys_content))
+
+        for msg in memory.build_summary_messages():
+            new_conv.add_message(msg)
+
+        new_conv.validate_sequence()
+        self.conversation = new_conv
+        self._current_tool_results = []
+        self._pending_approval = None
+        self._current_tool_round = 0
+        self._streaming_text = ""
+        return True
+
+    def reset_session(self) -> None:
+        """Reset conversation and session state to clean initial state."""
+        from agent.models import Conversation
+        self.conversation = Conversation()
+        self._turn_counter = 0
+        self._current_turn_id = None
+        self._current_tool_round = 0
+        self._streaming_text = ""
+        self._current_tool_results = []
+        self._pending_approval = None
+        self._last_result = None
+
     def submit_prompt(
         self,
         prompt: str,

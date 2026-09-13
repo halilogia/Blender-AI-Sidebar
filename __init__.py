@@ -49,6 +49,12 @@ from .agent.openai_provider import OpenAICompatibleProvider
 from .agent.dispatcher import ToolDispatcher
 from .agent.runtime import AgentRuntime
 from .ui.preferences import get_effective_config
+from .adapter.session_persistence import (
+    register_session_handlers,
+    unregister_session_handlers,
+    set_runtime_getter,
+    load_session_memory_from_scene,
+)
 
 _runtime: Optional[AgentRuntime] = None
 _timer_bridge: Optional[TimerBridge] = None
@@ -135,10 +141,22 @@ def register(provider: Optional[BaseProvider] = None):
     _timer_bridge = TimerBridge(runtime=_runtime, event_queue=_runtime.event_queue)
     _timer_bridge.register()
 
+    # 6. Session Persistence (.blend save_pre and load_post handlers)
+    set_runtime_getter(get_runtime)
+    register_session_handlers()
+    try:
+        load_session_memory_from_scene(runtime=_runtime)
+    except Exception:
+        pass
+
 
 def unregister():
     """Unregister all extension components and guarantee clean shutdown."""
     global _runtime, _timer_bridge
+
+    # 0. Unregister session persistence handlers
+    unregister_session_handlers()
+    set_runtime_getter(None)
 
     # 1. Stop timer bridge
     if _timer_bridge is not None:
