@@ -42,6 +42,7 @@ from .tools.mutations.set_material import SetMaterialTool
 from .tools.mutations.assign_material import AssignMaterialTool
 from .tools.read_only.capture_viewport import CaptureViewportTool
 from .tools.read_only.visual_verify import VisualVerifyTool
+from .tools.propose_plan import ProposePlanTool
 from .core.config import Config
 from .agent.provider import BaseProvider
 from .agent.mock_provider import MockProvider
@@ -122,6 +123,7 @@ def register(provider: Optional[BaseProvider] = None):
     registry.register(AssignMaterialTool())
     registry.register(CaptureViewportTool())
     registry.register(VisualVerifyTool())
+    registry.register(ProposePlanTool())
 
     # 3. Adapter & Dispatcher
     adapter = BlenderAdapter()

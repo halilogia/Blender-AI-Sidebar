@@ -129,6 +129,10 @@ class ApprovalPolicy:
             obj_name = args.get("name", "").strip()
             return f'Transform "{obj_name}"' if obj_name else "Transform object"
 
+        if tool_name == "propose_plan":
+            title = args.get("title", "").strip()
+            return f'Propose plan "{title}"' if title else "Propose plan"
+
         formatted_args = ", ".join(f"{k}={v}" for k, v in sorted(args.items()))
         return f"{tool_name}({formatted_args})" if formatted_args else tool_name
 

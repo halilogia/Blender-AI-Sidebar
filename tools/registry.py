@@ -38,6 +38,11 @@ class ToolRegistry:
             raise ToolAlreadyRegisteredError(f"Tool '{name}' is already registered in ToolRegistry.")
 
         self._tools[name] = tool
+        if hasattr(tool, "set_registry") and callable(getattr(tool, "set_registry")):
+            try:
+                tool.set_registry(self)
+            except Exception:
+                pass
 
     def unregister(self, name: str) -> None:
         """Unregister a tool by name.

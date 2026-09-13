@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+import uuid
 
 from core.types import RiskLevel, ToolError, ToolResult
 
@@ -228,8 +229,10 @@ class Plan:
         steps = [PlanStep.from_dict(s) if isinstance(s, dict) else s for s in steps_raw]
         risk_raw = data.get("overall_risk", RiskLevel.LOW.value)
         risk = RiskLevel(risk_raw) if isinstance(risk_raw, str) and risk_raw in RiskLevel._value2member_map_ else RiskLevel.LOW
+        raw_plan_id = data.get("plan_id")
+        plan_id = raw_plan_id.strip() if isinstance(raw_plan_id, str) and raw_plan_id.strip() else f"plan_{uuid.uuid4().hex[:8]}"
         return cls(
-            plan_id=str(data.get("plan_id", "")),
+            plan_id=plan_id,
             title=str(data.get("title", "")),
             description=str(data.get("description", "")),
             steps=tuple(steps),
