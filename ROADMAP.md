@@ -143,13 +143,20 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
   - Privacy and log hygiene: raw image bytes and base64 strings excluded from history and message serialization.
   - 335 pure Python unit tests and 16/16 headless Blender integration suites passing (`test_multimodal_integration.py`).
 
+- [x] **M7 Task 3: Visual Scene Verification (COMPLETED)**:
+  - `VisualVerifier` deterministic visual scene verification engine and `VisualResultParser`.
+  - Read-only `visual_verify` semantic tool registered in `ToolRegistry` (`RiskLevel.READ_ONLY`).
+  - Structured decision outcomes: `PASS`, `FAIL`, `UNCERTAIN` with concise rationale.
+  - Verification hierarchy: deterministic RNA semantic verification (`ChangeVerifier`) is authoritative gatekeeper; visual verification is skipped if semantic verification fails.
+  - Safe failure handling: visual `FAIL` / `UNCERTAIN` reports visual discrepancy without triggering automatic rollback.
+  - Main-thread safety: `capture_viewport` and `get_viewport_screenshot` strictly isolated to Blender main thread.
+  - Zero raw PNG bytes or base64 data URIs leaked into history or message serialization.
+  - Robust parser safely rejecting malformed/corrupted model responses without unhandled exceptions.
+  - 365 pure Python unit tests and 17/17 headless Blender integration suites passing (`test_visual_verification_integration.py`).
+
 ---
 
 ## Planned Future Milestones
-
-### Milestone 7: Vision / Screenshot Grounding (Upcoming Tasks)
-- [ ] **M7 Task 3**: Visual Scene Verification:
-  - Visual sanity check comparing rendered viewport state against high-level prompt intent.
 
 ### Milestone 4.2: High-Level Plan Review (Tier 1)
 - [ ] Structured multi-step execution plan generated prior to complex scene edits.

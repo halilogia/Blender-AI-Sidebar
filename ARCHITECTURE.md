@@ -197,7 +197,15 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 - **Partial Material Verification**: Verifies only the explicitly mutated shader properties, ensuring default sockets do not trigger false failure positives.
 - **Failure Isolation**: On divergence, produces `VERIFICATION_FAILED` result with granular mismatch reports (`property`, `expected`, `actual`), aborting turn execution before unverified state reaches the user or LLM.
 
-### 3.7. Provider Protocol Engine (`agent/openai_provider.py`, `agent/sse_parser.py`, `agent/http_client.py`)
+### 3.7. Visual Scene Verification Subsystem (`agent/visual_verifier.py`, `tools/read_only/visual_verify.py`)
+- **`VisualVerifier`**: Pure Python verification primitive that evaluates high-level natural language expectations against rendered 3D Viewport images.
+- **Hierarchical Verification Safety**: Deterministic RNA semantic verification (`ChangeVerifier`) remains the primary, authoritative gatekeeper. Visual verification is skipped if semantic verification fails.
+- **Non-Destructive Outcomes**: Structured outcomes (`PASS`, `FAIL`, `UNCERTAIN`) act as a secondary sanity signal. A visual `FAIL` flags visual discrepancy warnings in tool and history records without triggering automated rollback of verified Blender state.
+- **`VisualResultParser`**: Robust, fault-tolerant parser extracting structured decisions from model output. Gracefully treats malformed JSON, markdown fences, unrecognized status tokens, or empty strings as `UNCERTAIN` without throwing unhandled exceptions.
+- **`VisualVerifyTool`**: Semantic read-only tool (`RiskLevel.READ_ONLY`) allowing the agent to capture the active viewport and request visual verification on demand.
+- **Zero Byte/Base64 Leaks**: History and serializations (`VisualVerificationResult.to_dict()`) store only `image_id` references, never raw bytes or base64 dumps.
+
+### 3.8. Provider Protocol Engine (`agent/openai_provider.py`, `agent/sse_parser.py`, `agent/http_client.py`)
 - **`HttpClient`**: Pure Python streaming HTTP client using `urllib.request`. Reads responses in arbitrary byte chunks supporting immediate abort via `cancel_event`.
 - **`SSEParser`**: Deterministic byte-level Server-Sent Events parser adhering to the W3C EventSource specification. Handles arbitrary chunk fragmentation across character boundaries with strict event size guards.
 - **`ToolCallAccumulator`**: Reassembles fragmented streaming tool-call deltas into complete, validated `ToolCall` objects.

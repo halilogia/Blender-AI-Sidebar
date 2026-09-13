@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - 2026-09-13
 
 ### Added
+- **M7 Task 3: Visual Scene Verification**:
+  - `VisualVerifier` (`agent/visual_verifier.py`) evaluating viewport state against high-level natural language prompt intent.
+  - Hierarchical verification: deterministic RNA semantic verification (`ChangeVerifier`) is authoritative; visual verification is skipped if semantic verification fails.
+  - Deterministic structured output format (`PASS`, `FAIL`, `UNCERTAIN` + concise rationale).
+  - Fault-tolerant `VisualResultParser` handling malformed JSON, markdown fences, unrecognized status values, or empty strings gracefully without unhandled exceptions.
+  - Read-only semantic tool `visual_verify` (`tools/read_only/visual_verify.py`) registered in `ToolRegistry` (`RiskLevel.READ_ONLY`).
+  - Safe failure policy: `FAIL` and `UNCERTAIN` report visual discrepancies without triggering automatic mutation rollbacks.
+  - Strict thread isolation: viewport capture and screenshot resolution remain on Blender main thread; worker thread handles HTTP/JSON/SSE.
+  - Zero raw image bytes or base64 strings in history logs or serialized results (`to_dict()`).
+  - Added unit test suite `tests/unit/test_visual_verifier.py` (unit tests expanded to 365 tests).
+  - Added Blender headless integration suite `tests/integration/test_visual_verification_integration.py` (master suite expanded to 17 suites).
 - **M7 Task 2: Multimodal Provider Integration**:
   - `ChatMessage` and `ProviderRequestContext` updated to support in-memory image attachments (`image_id` and `images: Mapping[str, bytes]`).
   - `ContextBuilder.build` resolves raw PNG bytes on the main thread via `adapter.get_viewport_screenshot(image_id)` before worker task dispatch.

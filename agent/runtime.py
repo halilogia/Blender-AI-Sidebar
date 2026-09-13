@@ -30,6 +30,12 @@ from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
 from agent.verifier import ChangeVerifier, build_change_set_from_result
+from agent.visual_verifier import (
+    VisualResultParser,
+    VisualVerificationResult,
+    VisualVerificationStatus,
+    VisualVerifier,
+)
 from agent.policy import (
     ApprovalDecision,
     ApprovalPolicy,
@@ -68,6 +74,7 @@ class AgentRuntime:
         max_tool_rounds: int = 5,
         policy: Optional[ApprovalPolicy] = None,
         verifier: Optional[Union[ChangeVerifier, bool]] = None,
+        visual_verifier: Optional[VisualVerifier] = None,
     ):
         self.provider = provider
         self.dispatcher = dispatcher
@@ -78,6 +85,16 @@ class AgentRuntime:
             self.verifier = None
         else:
             self.verifier = verifier if isinstance(verifier, ChangeVerifier) else ChangeVerifier()
+
+        if visual_verifier is not None:
+            self.visual_verifier = visual_verifier
+        else:
+            adapter = getattr(self.dispatcher, "adapter", None)
+            self.visual_verifier = VisualVerifier(
+                provider=self.provider,
+                adapter=adapter,
+                image_resolver=self._resolve_image_bytes,
+            )
 
         self.event_queue = event_queue or ThreadSafeEventQueue()
         self.worker = worker or AgentWorker(provider=self.provider, event_queue=self.event_queue)
@@ -138,6 +155,20 @@ class AgentRuntime:
         """Dispatch tool call on the main thread and verify mutation outcomes."""
         tool_res = self.dispatcher.dispatch(tool_call)
 
+        # Handle visual_verify tool post-execution
+        if tool_call.tool_name == "visual_verify" and tool_res.success and self.visual_verifier:
+            data = dict(tool_res.data or {})
+            exp_desc = data.get("expected_description", "")
+            img_id = data.get("image_id")
+            vis_res = self.visual_verifier.verify(
+                expected_description=exp_desc,
+                image_id=img_id,
+                cancel_event=self._current_cancel_event,
+                turn_id=self._current_turn_id or "visual_verify",
+            )
+            data["visual_verification"] = vis_res.to_dict()
+            return ToolResult.ok(tool=tool_res.tool, data=data)
+
         if not tool_res.success or self.verifier is None:
             return tool_res
 
@@ -169,6 +200,26 @@ class AgentRuntime:
                     "verification": verif_dict,
                 },
             )
+
+    def verify_visual(
+        self,
+        expected_description: str,
+        image_id: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> VisualVerificationResult:
+        """Evaluate scene appearance against expected description via VisualVerifier."""
+        if not self.visual_verifier:
+            return VisualVerificationResult(
+                status=VisualVerificationStatus.UNCERTAIN,
+                reason="Visual verification unavailable: No VisualVerifier configured.",
+                expected_description=expected_description,
+                details={"error_type": "NO_VISUAL_VERIFIER"},
+            )
+        return self.visual_verifier.verify(
+            expected_description=expected_description,
+            image_id=image_id,
+            cancel_event=cancel_event or self._current_cancel_event,
+        )
 
     # -------------------------------------------------------------------------
     # Asynchronous Event-Driven API (Phase 6 / M2.7)
