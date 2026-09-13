@@ -2,7 +2,7 @@
 
 This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
-**CURRENT STATUS: M7 Task 2 — Multimodal Provider Integration**
+**CURRENT STATUS: M8 — Context Compaction & Rolling Memory (COMPLETED)**
 
 ---
 
@@ -17,10 +17,10 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M4.1** | **Deterministic Approval Gate & HUD Card** | Centralized `ApprovalPolicy`, `PENDING_APPROVAL` gate, Viewport Approval Card | **COMPLETED** | 252 pure Python tests, 12 Blender suites |
 | **M5** | **Deterministic Mutation Verification** | `ChangeSet`, `ChangeVerifier`, tolerance engine, `VERIFICATION_FAILED` handling | **COMPLETED** | 301 pure Python tests, 13 Blender suites |
 | **M6** | **Materials & Shader Tools** | `set_material`, `assign_material`, Principled BSDF mutation, slot expansion | **COMPLETED** | 313 pure Python tests, 14 Blender suites |
-| **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual reasoning | **IN PROGRESS (Task 2 Complete)** | 335 pure Python tests, 16 Blender suites |
+| **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual verification | **COMPLETED** | 365 pure Python tests, 17 Blender suites |
 | **M4.2** | **High-Level Plan Review** | Structured immutable plans, PlanValidator, propose_plan, PlanExecutor, batch approval | **COMPLETED** | 517 pure Python tests |
-| **M8** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M8 Milestone |
-| **M9** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M9 Milestone |
+| **M8** | **Context Compaction & Rolling Memory** | Rolling memory, selective pruning, .blend session persistence + sanitization | **COMPLETED** | 419 pure Python tests, 18 Blender suites |
+| **M9** | **Advanced Agentic Blender Operations** | Semantic tools, scene construction, inspect-plan-execute-verify-repair loop | *PLANNED* | M9 Milestone |
 
 ---
 
@@ -123,7 +123,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
   - 313 pure Python unit tests passing.
   - 14/14 headless Blender integration test suites passing (`test_material_mutations.py`).
 
-### Milestone 7: Vision / Screenshot Grounding (In Progress)
+### Milestone 7: Vision / Screenshot Grounding (COMPLETED)
 - [x] **M7 Task 1: Viewport Screenshot Capture Primitive (COMPLETED)**:
   - `capture_viewport` read-only semantic tool (`RiskLevel.READ_ONLY`).
   - Main-thread execution enforcement via `assert_main_thread()`.
@@ -156,7 +156,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 
 ---
 
-## Planned Future Milestones
+## Completed Milestones (continued)
 
 ### Milestone 4.2: High-Level Plan Review (COMPLETED)
 - [x] Structured immutable execution plans (`agent/plan_models.py`): frozen `Plan` / `PlanStep`, validated snapshot semantics.
@@ -190,7 +190,10 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 
 ## Planned Future Milestones
 
-### Milestone 9: Text-to-3D Asset Generation Integration
-- [ ] External 3D generation API bridge (Tripo3D, Meshy, Rodin, Trellis).
-- [ ] `generate_3d_asset` tool dispatching prompt to text-to-3D service and automatically importing generated `.glb`/`.obj` mesh into active scene.
+### Milestone 9: Advanced Agentic Blender Operations
+- [ ] Stronger semantic Blender tools.
+- [ ] Camera / light / collection / modifier / mesh operation coverage.
+- [ ] Multi-step scene construction capabilities.
+- [ ] Agent loop: inspect → plan → execute → verify → repair.
+- [ ] Real Blender end-to-end validation.
 
