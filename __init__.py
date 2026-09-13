@@ -26,7 +26,6 @@ from .ui.operators import register_operators, unregister_operators
 from .ui.panel import register_panels, unregister_panels
 from .ui.keymap import register_keymaps, unregister_keymaps
 from .ui.header import register_header, unregister_header
-from .ui.web_launcher import register_web_launcher, unregister_web_launcher, start_web_server, stop_web_server
 from .ui.gpu_overlay import register as register_gpu_overlay, unregister as unregister_gpu_overlay
 from .ui.timer_bridge import TimerBridge
 from .adapter.blender_adapter import BlenderAdapter
@@ -54,12 +53,6 @@ def get_timer_bridge() -> Optional[TimerBridge]:
     return _timer_bridge
 
 
-def get_web_server():
-    """Retrieve the active local web server bridge instance."""
-    from .ui.web_launcher import get_web_server as _gws
-    return _gws()
-
-
 def register():
     """Register all extension components, tools, runtime, and timer bridge."""
     global _runtime, _timer_bridge
@@ -68,14 +61,13 @@ def register():
     if _runtime is not None or _timer_bridge is not None:
         unregister()
 
-    # 1. UI Preferences, Properties, Operators, Panels, Header, Keymaps, Web Launcher & GPU Overlay
+    # 1. UI Preferences, Properties, Operators, Panels, Header, Keymaps & GPU Overlay
     register_preferences()
     register_properties()
     register_operators()
     register_panels()
     register_header()
     register_keymaps()
-    register_web_launcher()
     register_gpu_overlay()
 
     # 2. Tool Registry & Readers
@@ -98,30 +90,23 @@ def register():
     _timer_bridge = TimerBridge(runtime=_runtime, event_queue=_runtime.event_queue)
     _timer_bridge.register()
 
-    # 6. Local Web Server for Web UI Bridge
-    start_web_server(_runtime)
-
 
 def unregister():
     """Unregister all extension components and guarantee clean shutdown."""
     global _runtime, _timer_bridge
 
-    # 1. Stop local web server
-    stop_web_server()
-
-    # 2. Stop timer bridge
+    # 1. Stop timer bridge
     if _timer_bridge is not None:
         _timer_bridge.unregister()
         _timer_bridge = None
 
-    # 3. Shutdown runtime and background workers
+    # 2. Shutdown runtime and background workers
     if _runtime is not None:
         _runtime.shutdown()
         _runtime = None
 
-    # 4. Unregister UI & Keymaps
+    # 3. Unregister UI & Keymaps
     unregister_gpu_overlay()
-    unregister_web_launcher()
     unregister_keymaps()
     unregister_header()
     unregister_panels()

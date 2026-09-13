@@ -41,7 +41,7 @@ class AISIDEBAR_PT_main_panel(Panel):
         status = props.agent_status
 
         if status == "IDLE":
-            box.label(text="Bridge: Online (Ready)", icon="CHECKMARK")
+            box.label(text="AI Agent: Ready", icon="CHECKMARK")
         elif status in ("PROCESSING", "EXECUTING_TOOL"):
             box.label(text=f"AI: {props.current_action}", icon="TIME")
             box.operator("ai_sidebar.cancel_turn", text="Cancel Turn", icon="CANCEL")

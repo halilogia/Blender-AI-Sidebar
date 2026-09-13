@@ -92,8 +92,6 @@ class TestRuntimeIsolationAndSecurity(unittest.TestCase):
                 # Designated transport and launcher modules
                 norm_path = file_path.replace("\\", "/")
                 is_http_client = norm_path.endswith("agent/http_client.py")
-                is_web_server = norm_path.endswith("core/web_server.py")
-                is_web_launcher = norm_path.endswith("ui/web_launcher.py")
 
                 with open(file_path, "r", encoding="utf-8") as fh:
                     content = fh.read()
@@ -108,9 +106,7 @@ class TestRuntimeIsolationAndSecurity(unittest.TestCase):
                     elif isinstance(node, (ast.Import, ast.ImportFrom)):
                         mod = getattr(node, "module", None) or getattr(node, "names", [None])[0].name
                         base_mod = mod.split(".")[0]
-                        if (is_http_client or is_web_server) and base_mod in {"urllib", "http", "socket", "ssl", "socketserver"}:
-                            continue
-                        if is_web_launcher and base_mod in {"subprocess", "webbrowser"}:
+                        if is_http_client and base_mod in {"urllib", "http", "socket", "ssl"}:
                             continue
                         self.assertNotIn(
                             base_mod, forbidden_modules,

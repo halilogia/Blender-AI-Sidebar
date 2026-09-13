@@ -14,7 +14,6 @@ TESTS = [
     "tests/integration/test_m1_acceptance.py",
     "tests/integration/test_preferences.py",
     "tests/integration/test_provider_roundtrip.py",
-    "tests/integration/test_web_ui_integration.py",
     "tests/integration/test_gpu_overlay.py",
 ]
 

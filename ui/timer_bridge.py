@@ -82,28 +82,6 @@ class TimerBridge:
         # Sync runtime state to Blender UI WindowManager properties
         self._sync_ui_properties()
 
-        # Broadcast events to Web UI if local web bridge is active
-        try:
-            from .web_launcher import get_web_server
-            ws = get_web_server()
-            if ws and ws.is_running:
-                for ev in events:
-                    etype = getattr(ev, "event_type", "")
-                    if etype == "STREAMING_TEXT_DELTA":
-                        ws.broadcast_event("assistant_text_delta", {"delta": getattr(ev, "delta", "")})
-                    elif etype == "TOOL_CALL_REQUESTED":
-                        ws.broadcast_event("tool_started", {"tool_name": getattr(ev, "tool_name", "")})
-                    elif etype == "TOOL_RESULT_READY":
-                        res = getattr(ev, "result", None)
-                        summary = res.summary if res else ""
-                        ws.broadcast_event("tool_completed", {"tool_name": getattr(ev, "tool_name", ""), "summary": summary})
-                    elif etype == "FINAL_RESPONSE_READY":
-                        ws.broadcast_event("turn_completed", {"final_text": getattr(ev, "final_text", "")})
-                    elif etype == "AGENT_ERROR":
-                        ws.broadcast_event("agent_error", {"message": getattr(ev, "message", "Error")})
-        except Exception:
-            pass
-
         # Tag 3D Viewport areas for redraw if state changed or events arrived
         self.tag_redraw_view3d()
 

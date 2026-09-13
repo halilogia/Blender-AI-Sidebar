@@ -125,6 +125,7 @@ Blender AI Sidebar is designed around five non-negotiable principles:
 - **`ToolRegistry` & `ToolDispatcher`**: Validates incoming tool calls against JSON Schema definitions (`required`, `properties`, `additionalProperties: false`) before execution.
 
 ### 3.5. Native UI & Timer Bridge (`ui/`)
+- **`GPU Viewport Overlay` (`ui/gpu_overlay/`)**: Higgsfield-style floating HUD rendered directly on Blender's 3D Viewport framebuffer (`SpaceView3D.draw_handler_add` with `POST_PIXEL`). Features anti-aliased rounded box geometry, multi-pass drop shadow, blinking cursor, full Turkish/Unicode text editing, hotkey triggering (`Alt+Space`), and in-scene assistant drawer with zero external C++ dependencies.
 - **`TimerBridge`**: Registers with `bpy.app.timers`. Each tick drains up to `max_events_per_tick` (10) within `max_tick_seconds` (5 ms), processes events on the main thread, synchronizes `WindowManager` RNA properties, and calls `tag_redraw()` on visible 3D Viewports.
 - **`AddonPreferences`**: Securely handles user configuration (`base_url`, `model`, `api_key`, `timeout_seconds`), automatically saves to user resource directory (`config.json`), and respects environment variable overrides (`OPENAI_BASE_URL`, `BLENDER_AI_API_KEY`).
 
