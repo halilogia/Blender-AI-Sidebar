@@ -8,6 +8,7 @@ Zero Blender (bpy) dependencies. Pure Python standard library.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from agent.models import ChatMessage, Conversation, Role, ToolCall
@@ -251,6 +252,60 @@ def prune_tool_message_content(tool_name: Optional[str], content: Optional[str])
     if "visual_verification" in data:
         summary_dict["visual_verification"] = data["visual_verification"]
     return json.dumps(summary_dict, ensure_ascii=False), True
+
+
+_RE_DATA_URI = re.compile(r"data:image/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/=]+")
+_RE_BYTES_LITERAL = re.compile(r"b['\"][A-Za-z0-9+/=\\x]{20,}['\"]")
+_RE_PREFIXED_TOKEN = re.compile(
+    r"\b(?:sk[_-][A-Za-z0-9_-]{16,}|gh[pousr][_-][A-Za-z0-9_]{16,}|glpat[_-][A-Za-z0-9_-]{16,}|xox[baprs][_-][A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{20,})\b"
+)
+_RE_BEARER = re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._~+/-]{16,}=*)")
+_RE_IMAGE_ID_TOKEN = re.compile(r"\bimg_[0-9a-zA-Z_\-]{8,}\b")
+_RE_LONG_BASE64 = re.compile(r"\b[A-Za-z0-9+/]{64,}={0,2}\b")
+
+_RE_KEY_VALUE_SECRET = re.compile(
+    r"(?i)([\'\"]?)\b(api[_\-\s]?key|secret|token|password|passwd|auth[_\-\s]?token|access[_\-\s]?token|credential)\b\1(\s*[:=]\s*|\s+is\s+)([\'\"]?)([^\s\'\",}{]{4,})(\4)"
+)
+_RE_IMAGE_ID_KV = re.compile(
+    r"(?i)([\'\"]?)\b(image_id)\b\1(\s*[:=]\s*|\s+is\s+)([\'\"]?)([^\s\'\",}{]+)(\4)"
+)
+
+
+def _redact_kv_secret(m: re.Match) -> str:
+    q1 = m.group(1) or ""
+    key = m.group(2)
+    sep = m.group(3)
+    q2 = m.group(4) or ""
+    return f"{q1}{key}{q1}{sep}{q2}[REDACTED_SECRET]{q2}"
+
+
+def _redact_kv_image_id(m: re.Match) -> str:
+    q1 = m.group(1) or ""
+    key = m.group(2)
+    sep = m.group(3)
+    q2 = m.group(4) or ""
+    return f"{q1}{key}{q1}{sep}{q2}[REDACTED_IMAGE_ID]{q2}"
+
+
+def sanitize_persisted_text(text: Any) -> str:
+    """Deterministic redaction of credentials, API keys, tokens, image_ids, and raw binary bytes.
+
+    Preserves normal descriptive text while redacting sensitive credentials and binary representations.
+    """
+    if not isinstance(text, str):
+        text = str(text or "")
+    if not text:
+        return ""
+
+    text = _RE_DATA_URI.sub("[REDACTED_IMAGE_BYTES]", text)
+    text = _RE_BYTES_LITERAL.sub("[REDACTED_BYTES]", text)
+    text = _RE_PREFIXED_TOKEN.sub("[REDACTED_SECRET]", text)
+    text = _RE_BEARER.sub(r"\1 [REDACTED_SECRET]", text)
+    text = _RE_KEY_VALUE_SECRET.sub(_redact_kv_secret, text)
+    text = _RE_IMAGE_ID_KV.sub(_redact_kv_image_id, text)
+    text = _RE_IMAGE_ID_TOKEN.sub("[REDACTED_IMAGE_ID]", text)
+    text = _RE_LONG_BASE64.sub("[REDACTED_BYTES]", text)
+    return text
 
 
 class RollingMemory:
@@ -525,18 +580,44 @@ class RollingMemory:
         return [summary_user, ack_assistant]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize rolling memory to a deterministic dictionary for persistence."""
+        """Serialize rolling memory to a deterministic dictionary for persistence.
+
+        All text entries (tasks, inspections, errors) and scene state mutations are strictly
+        sanitized to eliminate credentials, API keys, tokens, image_ids, and raw binary dumps.
+        """
+        clean_mutations = {}
+        for target, item in sorted(self.verified_mutations.items()):
+            clean_target = sanitize_persisted_text(target)
+            clean_item = {}
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    if k in ("api_key", "secret", "image_id", "bytes", "token", "password", "credential"):
+                        continue
+                    if isinstance(v, str):
+                        clean_item[k] = sanitize_persisted_text(v)
+                    elif isinstance(v, dict):
+                        clean_item[k] = {
+                            sub_k: (sanitize_persisted_text(sub_v) if isinstance(sub_v, str) else sub_v)
+                            for sub_k, sub_v in v.items()
+                            if sub_k not in ("api_key", "secret", "image_id", "bytes", "token", "password", "credential")
+                        }
+                    else:
+                        clean_item[k] = v
+            clean_mutations[clean_target] = clean_item
+
         return {
             "schema_version": SESSION_MEMORY_SCHEMA_VERSION,
-            "tasks": list(self.tasks),
-            "verified_mutations": {
-                k: dict(v) for k, v in sorted(self.verified_mutations.items())
-            },
-            "deleted_entities": sorted(list(set(self.deleted_entities))),
-            "inspections": list(self.inspections),
-            "errors": list(self.errors),
+            "tasks": [sanitize_persisted_text(t) for t in self.tasks],
+            "verified_mutations": clean_mutations,
+            "deleted_entities": [sanitize_persisted_text(d) for d in sorted(list(set(self.deleted_entities)))],
+            "inspections": [sanitize_persisted_text(i) for i in self.inspections],
+            "errors": [sanitize_persisted_text(e) for e in self.errors],
             "last_visual_verification": (
-                dict(self.last_visual_verification) if self.last_visual_verification else None
+                {
+                    "decision": str(self.last_visual_verification.get("decision", "UNKNOWN")),
+                    "rationale": sanitize_persisted_text(str(self.last_visual_verification.get("rationale", "")))[:120],
+                }
+                if self.last_visual_verification else None
             ),
         }
 
@@ -561,7 +642,7 @@ class RollingMemory:
         # Tasks
         tasks = data.get("tasks")
         if isinstance(tasks, list):
-            mem.tasks = [str(t) for t in tasks if isinstance(t, str)]
+            mem.tasks = [sanitize_persisted_text(t) for t in tasks if isinstance(t, str)]
 
         # Verified mutations
         muts = data.get("verified_mutations")
@@ -569,33 +650,43 @@ class RollingMemory:
             for target, item in muts.items():
                 if isinstance(target, str) and isinstance(item, dict):
                     # Sanitize: ensure no secrets or image data leaked
-                    clean_item = {
-                        k: v for k, v in item.items()
-                        if k not in ("api_key", "secret", "image_id", "bytes")
-                    }
-                    mem.verified_mutations[target] = clean_item
+                    clean_item = {}
+                    for k, v in item.items():
+                        if k in ("api_key", "secret", "image_id", "bytes", "token", "password", "credential"):
+                            continue
+                        if isinstance(v, str):
+                            clean_item[k] = sanitize_persisted_text(v)
+                        elif isinstance(v, dict):
+                            clean_item[k] = {
+                                sub_k: (sanitize_persisted_text(sub_v) if isinstance(sub_v, str) else sub_v)
+                                for sub_k, sub_v in v.items()
+                                if sub_k not in ("api_key", "secret", "image_id", "bytes", "token", "password", "credential")
+                            }
+                        else:
+                            clean_item[k] = v
+                    mem.verified_mutations[sanitize_persisted_text(target)] = clean_item
 
         # Deleted entities
         dels = data.get("deleted_entities")
         if isinstance(dels, list):
-            mem.deleted_entities = [str(d) for d in dels if isinstance(d, str)]
+            mem.deleted_entities = [sanitize_persisted_text(d) for d in dels if isinstance(d, str)]
 
         # Inspections
         insps = data.get("inspections")
         if isinstance(insps, list):
-            mem.inspections = [str(i) for i in insps if isinstance(i, str)]
+            mem.inspections = [sanitize_persisted_text(i) for i in insps if isinstance(i, str)]
 
         # Errors
         errs = data.get("errors")
         if isinstance(errs, list):
-            mem.errors = [str(e) for e in errs if isinstance(e, str)]
+            mem.errors = [sanitize_persisted_text(e) for e in errs if isinstance(e, str)]
 
         # Visual verification
         vis = data.get("last_visual_verification")
         if isinstance(vis, dict):
             mem.last_visual_verification = {
                 "decision": str(vis.get("decision", "UNKNOWN")),
-                "rationale": str(vis.get("rationale", ""))[:120],
+                "rationale": sanitize_persisted_text(str(vis.get("rationale", "")))[:120],
             }
 
         return mem

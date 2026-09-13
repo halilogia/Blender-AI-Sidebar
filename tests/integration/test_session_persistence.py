@@ -174,23 +174,45 @@ def test_secrets_and_api_keys_never_written_to_blend():
     scene = bpy.context.scene
 
     runtime = AgentRuntime(provider=MockProvider(), dispatcher=ToolDispatcher(registry=ToolRegistry(), adapter=BlenderAdapter()))
-    tc = ToolCall(call_id="c1", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
-    res = json.dumps({
+    tc1 = ToolCall(call_id="c1", tool_name="create_primitive", arguments={"primitive_type": "CUBE"})
+    res1 = json.dumps({
         "name": "SecureCube",
         "verification": {"status": "PASS", "operation": "create", "target_name": "SecureCube"},
     })
+    tc2 = ToolCall(call_id="c2", tool_name="inspect_scene", arguments={})
+    res2 = json.dumps({
+        "object_count": 1,
+        "credential": "admin:supersecretpassword",
+        "image_id": "img_0123456789abcdef",
+    })
+    tc3 = ToolCall(call_id="c3", tool_name="transform_object", arguments={"object_name": "SecureCube"})
+    res3 = json.dumps({
+        "error": "Failed with secret='my_token_secret_value_123'",
+        "type": "AUTH_ERROR",
+    })
+
     runtime.conversation.add_message(ChatMessage(role=Role.SYSTEM, content="Sys"))
-    runtime.conversation.add_message(ChatMessage(role=Role.USER, content="Secret task"))
-    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc]))
-    runtime.conversation.add_message(ChatMessage(role=Role.TOOL, content=res, tool_call_id="c1", name="create_primitive"))
-    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Done"))
+    runtime.conversation.add_message(ChatMessage(role=Role.USER, content="Task with api_key: sk-proj-1234567890abcdef1234567890"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc1]))
+    runtime.conversation.add_message(ChatMessage(role=Role.TOOL, content=res1, tool_call_id="c1", name="create_primitive"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Created, now inspect"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc2]))
+    runtime.conversation.add_message(ChatMessage(role=Role.TOOL, content=res2, tool_call_id="c2", name="inspect_scene"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Inspected, now transform"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc3]))
+    runtime.conversation.add_message(ChatMessage(role=Role.TOOL, content=res3, tool_call_id="c3", name="transform_object"))
+    runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Error recorded"))
 
     save_session_memory_to_scene(scene=scene, runtime=runtime)
     raw_payload = scene.get(SESSION_MEMORY_PROPERTY_NAME, "")
-    assert "api_key" not in raw_payload
-    assert "secret" not in raw_payload
-    assert "token" not in raw_payload
-    assert "image_id" not in raw_payload
+
+    assert "sk-proj-1234567890abcdef1234567890" not in raw_payload, "API key leaked into .blend scene!"
+    assert "admin:supersecretpassword" not in raw_payload, "Credential leaked into .blend scene!"
+    assert "my_token_secret_value_123" not in raw_payload, "Secret leaked into .blend scene!"
+    assert "img_0123456789abcdef" not in raw_payload, "Image ID leaked into .blend scene!"
+
+    # Verify redaction markers are present
+    assert "[REDACTED_SECRET]" in raw_payload
     print("[PASS] Test 5: Zero secret or API key pollution confirmed.")
 
 

@@ -284,6 +284,103 @@ class TestSessionPersistence(unittest.TestCase):
         self.assertIn("'Sphere': create", summary_content)
         new_runtime.conversation.validate_sequence()
 
+    def test_task_containing_api_key_is_sanitized(self):
+        """User task containing API key or secret token is deterministically redacted."""
+        mem = RollingMemory()
+        mem.tasks = [
+            "Create a torus using api_key: sk-proj-1234567890abcdef1234567890 in scene",
+            "Fetch texture with apiKey='AIzaSyD-1234567890abcdef1234567890abcdef'",
+        ]
+        serialized = serialize_session_memory(mem)
+        self.assertNotIn("sk-proj-1234567890abcdef1234567890", serialized)
+        self.assertNotIn("AIzaSyD-1234567890abcdef1234567890abcdef", serialized)
+        self.assertIn("[REDACTED_SECRET]", serialized)
+        self.assertIn("Create a torus using api_key: [REDACTED_SECRET] in scene", serialized)
+
+    def test_error_containing_secret_is_sanitized(self):
+        """Error messages containing secret parameters or Bearer tokens are redacted."""
+        mem = RollingMemory()
+        mem.errors = [
+            "Network error with secret='my_super_secret_token_123' at endpoint",
+            "Authorization failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 expired",
+        ]
+        serialized = serialize_session_memory(mem)
+        self.assertNotIn("my_super_secret_token_123", serialized)
+        self.assertNotIn("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", serialized)
+        self.assertIn("secret='[REDACTED_SECRET]'", serialized)
+        self.assertIn("Bearer [REDACTED_SECRET]", serialized)
+
+    def test_inspection_containing_credential_is_sanitized(self):
+        """Inspection results containing credentials, image_ids, or raw byte blobs are redacted."""
+        mem = RollingMemory()
+        mem.inspections = [
+            "inspect_object: found credential='admin:hunter2' and token: ghp_123456789012345678901234567890",
+            "capture_viewport: image_id='img_0123456789abcdef' data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        ]
+        serialized = serialize_session_memory(mem)
+        self.assertNotIn("admin:hunter2", serialized)
+        self.assertNotIn("ghp_123456789012345678901234567890", serialized)
+        self.assertNotIn("img_0123456789abcdef", serialized)
+        self.assertNotIn("data:image/png;base64", serialized)
+        self.assertIn("credential='[REDACTED_SECRET]'", serialized)
+        self.assertIn("[REDACTED_IMAGE_ID]", serialized)
+        self.assertIn("[REDACTED_IMAGE_BYTES]", serialized)
+
+    def test_normal_task_error_inspection_text_preserved(self):
+        """Normal descriptive texts for tasks, errors, and inspections are preserved verbatim."""
+        mem = RollingMemory()
+        mem.tasks = ["Create a blue cylinder at [0.0, 1.0, 2.0] and scale by 2.0"]
+        mem.errors = ["ValueError: Mesh has 0 vertices and cannot be subdivided"]
+        mem.inspections = ["inspect_mesh('Cylinder'): 64 verts, 32 faces"]
+
+        serialized = serialize_session_memory(mem)
+        restored = deserialize_session_memory(serialized)
+        self.assertIsNotNone(restored)
+
+        self.assertEqual(restored.tasks, ["Create a blue cylinder at [0.0, 1.0, 2.0] and scale by 2.0"])
+        self.assertEqual(restored.errors, ["ValueError: Mesh has 0 vertices and cannot be subdivided"])
+        self.assertEqual(restored.inspections, ["inspect_mesh('Cylinder'): 64 verts, 32 faces"])
+
+    def test_serialize_deserialize_round_trip_eliminates_all_sensitive_data(self):
+        """Full round-trip test ensuring sensitive tokens never survive in persisted or restored state."""
+        mem = RollingMemory()
+        mem.tasks = ["Set password: superSecretPassword123 on asset"]
+        mem.errors = ["Auth token: glpat-12345678901234567890 rejected"]
+        mem.inspections = ["Raw buffer: b'\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00'"]
+        mem.verified_mutations = {
+            "SensitiveCube": {
+                "operation": "create",
+                "target": "SensitiveCube",
+                "api_key": "sk-1234567890abcdef1234",
+                "token": "ghp_secrettoken1234567890",
+                "status": "PASS",
+                "properties": {"location": [0.0, 0.0, 0.0]},
+            }
+        }
+        mem.deleted_entities = ["OldSecretMesh"]
+
+        # 1. Serialize to JSON string
+        raw_json = serialize_session_memory(mem)
+
+        # 2. Assert raw JSON contains zero sensitive secrets
+        self.assertNotIn("superSecretPassword123", raw_json)
+        self.assertNotIn("glpat-12345678901234567890", raw_json)
+        self.assertNotIn("sk-1234567890abcdef1234", raw_json)
+        self.assertNotIn("ghp_secrettoken1234567890", raw_json)
+        self.assertNotIn("\\x89PNG", raw_json)
+
+        # 3. Deserialize back
+        restored = deserialize_session_memory(raw_json)
+        self.assertIsNotNone(restored)
+
+        # 4. Assert restored state is sanitized
+        self.assertIn("password: [REDACTED_SECRET]", restored.tasks[0])
+        self.assertIn("token: [REDACTED_SECRET]", restored.errors[0])
+        self.assertIn("[REDACTED_BYTES]", restored.inspections[0])
+        self.assertNotIn("api_key", restored.verified_mutations["SensitiveCube"])
+        self.assertNotIn("token", restored.verified_mutations["SensitiveCube"])
+        self.assertEqual(restored.verified_mutations["SensitiveCube"]["properties"]["location"], [0.0, 0.0, 0.0])
+
 
 if __name__ == "__main__":
     unittest.main()
