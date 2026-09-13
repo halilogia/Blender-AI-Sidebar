@@ -201,7 +201,9 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 - **`HttpClient`**: Pure Python streaming HTTP client using `urllib.request`. Reads responses in arbitrary byte chunks supporting immediate abort via `cancel_event`.
 - **`SSEParser`**: Deterministic byte-level Server-Sent Events parser adhering to the W3C EventSource specification. Handles arbitrary chunk fragmentation across character boundaries with strict event size guards.
 - **`ToolCallAccumulator`**: Reassembles fragmented streaming tool-call deltas into complete, validated `ToolCall` objects.
-- **`ContextBuilder`**: Assembles system prompt, conversation history, and tool schemas into an immutable `ProviderRequestContext` while enforcing character safety caps (`MAX_CONTEXT_CHARS=15000`).
+- **`ContextBuilder`**: Assembles system prompt, conversation history, and tool schemas into an immutable `ProviderRequestContext` while enforcing character safety caps (`MAX_CONTEXT_CHARS=15000`). Resolves in-memory PNG bytes from `adapter.get_viewport_screenshot` strictly on the main thread.
+- **`OpenAIRequestMapper` (M7 Task 2)**: Maps internal messages to OpenAI Chat Completions payload format. For multimodal messages referencing `image_id`, formats content parts with `image_url` data URIs (`data:image/png;base64,...`) entirely in memory.
+- **Multimodal Capability Gate (M7 Task 2)**: When `supports_multimodal=False`, deterministically aborts image dispatch with `PROVIDER_UNSUPPORTED` / `MultimodalUnsupportedError`.
 
 ### 3.8. Native Dual User Interface (`ui/`)
 - **`GPU Viewport Overlay` (`ui/gpu_overlay/`)**: Floating HUD rendered directly on Blender's 3D Viewport framebuffer (`SpaceView3D.draw_handler_add` with `POST_PIXEL`). Features anti-aliased rounded box geometry, multi-pass drop shadow, blinking cursor, full Turkish/Unicode text editing, interactive Approve/Reject buttons, hotkey triggering (`Alt+Space`), and in-scene assistant drawer with zero external C++ dependencies.
@@ -227,6 +229,7 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 | **Invalid / Expired Approval** | `AgentRuntime.approve` | Rejects stale or duplicate execution attempts. No orphaned operations. |
 | **Mutation Outcome Divergence** | `ChangeVerifier` -> `AgentRuntime` | Returns `ToolResult.fail("VERIFICATION_FAILED")` with mismatch details. Transitions to `AgentState.ERROR`. |
 | **Viewport Render Unavailable** | `BlenderAdapter.capture_viewport` | Returns `ToolResult.fail("VIEWPORT_UNAVAILABLE")`. Catches missing viewport or GPU offscreen error safely. |
+| **Unsupported Multimodal Model** | `OpenAICompatibleProvider` / `OpenAIRequestMapper` | Emits `ProviderError(PROVIDER_UNSUPPORTED)` -> `AgentErrorEvent("PROVIDER_UNSUPPORTED")`. Transitions to `AgentState.ERROR`. |
 | **Infinite Tool Call Loop** | `AgentRuntime._current_tool_round` | Triggers `MAX_TOOL_ROUNDS_EXCEEDED` when `_current_tool_round > max_tool_rounds`. Transitions to `ERROR`. |
 | **User Turn Cancellation** | `AgentRuntime.cancel_current_turn` | Sets `cancel_event`, drops worker stream, invalidates `turn_id` and approvals, resets state to `IDLE`. |
 
@@ -234,11 +237,13 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 
 ## 5. Security & Privacy Guarantees
 
-1. **Localhost Network Policy**: Local loopback endpoints (`http://localhost:*`, `http://127.0.0.1:*`) are permitted without restriction, enabling completely offline, local AI operation (e.g. via local 9Router, Ollama, LM Studio).
-2. **Credential Hygiene**:
-   - API keys are marked as `PASSWORD` RNA subtype in Blender UI.
-   - Keys are never logged in plain text or saved to `.blend` files.
+Blender AI Copilot is designed around six non-negotiable principles:
+1. **Zero External Runtime Dependencies**: Standard library Python (`urllib`, `json`, `threading`, `queue`, `zlib`, `struct`) + Blender Native API (`bpy`, `gpu`, `gpu_extras`). No Chromium, no node.js, no binary wheel sidecars.
+2. **Key Hygiene**:
+   - API keys are never written to source control.
+   - Keys are kept in memory only as long as necessary.
    - Masked strings (`sk-1...abcd`) are used in history and serialization.
 3. **Deterministic Human-in-the-Loop Gate**: Destructive actions (such as deleting objects) are mathematically prevented from firing without manual confirmation, protecting artists against accidental scene corruption or hallucinations.
 4. **Lossless Recovery**: Every mutation is atomic and recorded in Blender's undo buffer, guaranteeing that the artist can undo any AI action with a single keystroke (`Ctrl+Z`).
 5. **Deterministic Verification Gate**: Mutations are guaranteed to conform to expected geometric and shader parameters through live RNA inspection, preventing silent scene state drift.
+6. **In-Memory Multimodal Privacy**: Viewport screenshots are never written to disk as temporary files. Raw PNG bytes and base64 payloads are excluded from ChatMessage serialization and history logs, preventing disk leaks and UI performance degradation.

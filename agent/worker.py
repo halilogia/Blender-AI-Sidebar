@@ -144,9 +144,14 @@ class AgentWorker:
                                 if hasattr(stream_ev.type, "value")
                                 else str(stream_ev.type)
                             )
+                            err_type = (
+                                type_str
+                                if type_str.startswith("PROVIDER_")
+                                else f"PROVIDER_{type_str}"
+                            )
                             self.event_queue.put(
                                 AgentErrorEvent(
-                                    error_type=f"PROVIDER_{type_str}",
+                                    error_type=err_type,
                                     message=stream_ev.message,
                                     turn_id=task.turn_id,
                                     details=stream_ev.details or {},

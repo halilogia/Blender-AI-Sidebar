@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - 2026-09-13
 
 ### Added
+- **M7 Task 2: Multimodal Provider Integration**:
+  - `ChatMessage` and `ProviderRequestContext` updated to support in-memory image attachments (`image_id` and `images: Mapping[str, bytes]`).
+  - `ContextBuilder.build` resolves raw PNG bytes on the main thread via `adapter.get_viewport_screenshot(image_id)` before worker task dispatch.
+  - Background worker thread isolation: worker strictly handles HTTP/JSON/SSE off the main thread without touching `bpy` or `gpu`.
+  - `OpenAIRequestMapper` maps messages with images into OpenAI-compatible `image_url` data URIs (`data:image/png;base64,...`) entirely in memory.
+  - In-memory privacy: zero temporary PNG files written to disk; raw image bytes and base64 strings excluded from history logs and message serialization.
+  - Deterministic capability gate: `supports_multimodal=False` deterministically yields `PROVIDER_UNSUPPORTED` / `MultimodalUnsupportedError`.
+  - Added `tests/unit/test_multimodal_provider.py` (unit tests expanded to 335 tests).
+  - Added `tests/integration/test_multimodal_integration.py` (master Blender integration test suite expanded to 16 suites).
 - **M7 Task 1: Viewport Screenshot Capture Primitive**:
   - `capture_viewport` read-only semantic tool (`RiskLevel.READ_ONLY`) in `tools/read_only/capture_viewport.py`.
   - `ViewportReader` in `adapter/readers/viewport_reader.py`:

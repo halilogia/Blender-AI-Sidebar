@@ -174,7 +174,18 @@ class AgentRuntime:
     # Asynchronous Event-Driven API (Phase 6 / M2.7)
     # -------------------------------------------------------------------------
 
-    def submit_prompt(self, prompt: str) -> str:
+    def _resolve_image_bytes(self, image_id: str) -> Optional[bytes]:
+        """Resolve raw PNG bytes for an image_id on the main thread."""
+        if hasattr(self, "dispatcher") and self.dispatcher and hasattr(self.dispatcher, "adapter"):
+            adapter = self.dispatcher.adapter
+            if hasattr(adapter, "get_viewport_screenshot"):
+                try:
+                    return adapter.get_viewport_screenshot(image_id)
+                except Exception:
+                    return None
+        return None
+
+    def submit_prompt(self, prompt: str, image_id: Optional[str] = None) -> str:
         """Submit a prompt for asynchronous background processing.
 
         Allocates a monotonic turn_id, transitions to PROCESSING,
@@ -182,6 +193,7 @@ class AgentRuntime:
 
         Args:
             prompt: User natural language prompt.
+            image_id: Optional in-memory image identifier for multimodal turns.
 
         Returns:
             The allocated turn_id string.
@@ -201,11 +213,12 @@ class AgentRuntime:
         self._current_metrics = TurnMetrics(turn_id=turn_id, t_submitted=time.time())
 
         # Record user prompt in session Conversation
-        self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt))
+        self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt, image_id=image_id))
 
         self.state_machine.transition_to(AgentState.PROCESSING)
         self.event_queue.put(PromptSubmittedEvent(prompt=prompt, turn_id=turn_id))
 
+        hist_detail = f"{prompt}\n[Attached image: {image_id}]" if image_id else prompt
         self.history.add(
             item_id=f"{turn_id}_user",
             turn_id=turn_id,
@@ -213,7 +226,7 @@ class AgentRuntime:
             title=f"User: {prompt[:36]}",
             status="SENT",
             summary=prompt,
-            detail=prompt,
+            detail=hist_detail,
         )
 
         context = None
@@ -222,6 +235,7 @@ class AgentRuntime:
             context = ContextBuilder.build(
                 conversation=self.conversation,
                 tools=tools,
+                image_resolver=self._resolve_image_bytes,
             )
 
         self.worker.submit_task(
@@ -490,6 +504,12 @@ class AgentRuntime:
                     )
                 detail_str = f"Tool: {tool_call.tool_name}\nArguments:\n{args_str}\n\nResult:\n{res_str}"
 
+                image_id = (
+                    tool_res.data.get("image_id")
+                    if (tool_res.success and isinstance(tool_res.data, dict))
+                    else None
+                )
+
                 # Append tool result to Conversation
                 self.conversation.add_message(
                     ChatMessage(
@@ -497,6 +517,7 @@ class AgentRuntime:
                         content=tool_content,
                         tool_call_id=tool_call.call_id,
                         name=tool_call.tool_name,
+                        image_id=image_id,
                     )
                 )
 
@@ -551,6 +572,7 @@ class AgentRuntime:
                 context = ContextBuilder.build(
                     conversation=self.conversation,
                     tools=tools,
+                    image_resolver=self._resolve_image_bytes,
                 )
 
             self.worker.submit_task(

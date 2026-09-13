@@ -7,7 +7,7 @@ Zero Blender (bpy) dependencies. Pure Python.
 
 from dataclasses import dataclass
 import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from agent.models import ChatMessage, Conversation, Role, ToolCall
 from agent.tool_mapper import OpenAICompatibleToolMapper
@@ -32,30 +32,37 @@ class ProviderRequestContext:
     """Normalized internal container for a provider request ready for dispatch.
 
     Immutable dataclass. Contains internal ChatMessage instances, mapped tool definitions,
-    and effective system prompt. Does NOT produce raw HTTP JSON body.
+    effective system prompt, and optional in-memory image attachments.
+    Does NOT produce raw HTTP JSON body.
     """
 
     messages: Tuple[ChatMessage, ...]
     tools: Tuple[Dict[str, Any], ...]
     system_prompt: str
+    images: Mapping[str, bytes]
 
     def __init__(
         self,
         messages: Iterable[ChatMessage],
         tools: Iterable[Dict[str, Any]],
         system_prompt: str,
+        images: Optional[Mapping[str, bytes]] = None,
     ):
         object.__setattr__(self, "messages", tuple(messages))
         object.__setattr__(self, "tools", tuple(tools))
         object.__setattr__(self, "system_prompt", str(system_prompt))
+        object.__setattr__(self, "images", dict(images) if images else {})
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize context to a deterministic dictionary."""
-        return {
+        d: Dict[str, Any] = {
             "system_prompt": self.system_prompt,
             "messages": [m.to_dict() for m in self.messages],
             "tools": list(self.tools),
         }
+        if self.images:
+            d["image_ids"] = sorted(list(self.images.keys()))
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProviderRequestContext":
@@ -64,6 +71,7 @@ class ProviderRequestContext:
             messages=[ChatMessage.from_dict(m) for m in data.get("messages", [])],
             tools=data.get("tools", []),
             system_prompt=data.get("system_prompt", ""),
+            images={},
         )
 
 
@@ -90,6 +98,8 @@ class ContextBuilder:
         system_prompt: Optional[str] = None,
         tools: Optional[Iterable[Union[BaseTool, Dict[str, Any]]]] = None,
         max_context_chars: int = MAX_CONTEXT_CHARS,
+        image_resolver: Optional[Callable[[str], Optional[bytes]]] = None,
+        images: Optional[Mapping[str, bytes]] = None,
     ) -> ProviderRequestContext:
         """Construct a ProviderRequestContext respecting character safety cap.
 
@@ -98,9 +108,11 @@ class ContextBuilder:
             system_prompt: Custom system prompt or None (uses DEFAULT_SYSTEM_PROMPT).
             tools: Registered tools or schemas to map to OpenAI function format.
             max_context_chars: Context safety limit in characters (default 15,000).
+            image_resolver: Optional callable (image_id -> raw bytes) to fetch in-memory images.
+            images: Optional pre-resolved mapping of image_id -> raw PNG bytes.
 
         Returns:
-            ProviderRequestContext with normalized messages and mapped tools.
+            ProviderRequestContext with normalized messages, mapped tools, and resolved images.
         """
         # 1. Resolve effective system prompt
         effective_sys_prompt = (
@@ -137,10 +149,32 @@ class ContextBuilder:
         if tools:
             mapped_tools = OpenAICompatibleToolMapper.map_tools(tools)
 
+        # 6. Resolve in-memory image attachments
+        resolved_images: Dict[str, bytes] = dict(images) if images else {}
+        if image_resolver:
+            for m in final_messages:
+                img_id = getattr(m, "image_id", None)
+                if not img_id and m.role == Role.TOOL and m.name == "capture_viewport" and m.content:
+                    try:
+                        content_dict = json.loads(m.content)
+                        if isinstance(content_dict, dict):
+                            img_id = content_dict.get("image_id")
+                    except Exception:
+                        pass
+
+                if img_id and img_id not in resolved_images:
+                    try:
+                        img_bytes = image_resolver(img_id)
+                        if img_bytes:
+                            resolved_images[img_id] = img_bytes
+                    except Exception:
+                        pass
+
         return ProviderRequestContext(
             messages=final_messages,
             tools=mapped_tools,
             system_prompt=effective_sys_prompt,
+            images=resolved_images,
         )
 
     @classmethod

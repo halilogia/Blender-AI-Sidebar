@@ -2,7 +2,7 @@
 
 This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
-**CURRENT STATUS: M7 Task 1 — Viewport Screenshot Capture**
+**CURRENT STATUS: M7 Task 2 — Multimodal Provider Integration**
 
 ---
 
@@ -17,7 +17,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M4.1** | **Deterministic Approval Gate & HUD Card** | Centralized `ApprovalPolicy`, `PENDING_APPROVAL` gate, Viewport Approval Card | **COMPLETED** | 252 pure Python tests, 12 Blender suites |
 | **M5** | **Deterministic Mutation Verification** | `ChangeSet`, `ChangeVerifier`, tolerance engine, `VERIFICATION_FAILED` handling | **COMPLETED** | 301 pure Python tests, 13 Blender suites |
 | **M6** | **Materials & Shader Tools** | `set_material`, `assign_material`, Principled BSDF mutation, slot expansion | **COMPLETED** | 313 pure Python tests, 14 Blender suites |
-| **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual reasoning | **IN PROGRESS (Task 1 Complete)** | 320 pure Python tests, 15 Blender suites |
+| **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual reasoning | **IN PROGRESS (Task 2 Complete)** | 335 pure Python tests, 16 Blender suites |
 | **M4.2** | **High-Level Plan Review (Tier 1)** | Multi-step plan preview and user confirmation before batch operations | *PLANNED* | M4 Milestone Phase 2 |
 | **M8** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M8 Milestone |
 | **M9** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M9 Milestone |
@@ -133,15 +133,21 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
   - Zero filesystem writes, zero scene contamination (objects, meshes, materials, images, and selection remain untouched).
   - Clean metadata contract (`image_id`, `width`, `height`, `format`, `mime_type`, `byte_size`) preventing conversation log pollution.
   - 320 pure Python unit tests and 15/15 headless Blender integration suites passing.
+- [x] **M7 Task 2: Multimodal Provider Integration (COMPLETED)**:
+  - Multimodal data contract: `ChatMessage` and `ProviderRequestContext` accept in-memory `image_id` / `images`.
+  - Main-thread image resolution: `ContextBuilder.build` resolves raw PNG bytes on the main thread via `adapter.get_viewport_screenshot(image_id)`.
+  - Thread-safe worker isolation: background worker thread receives pre-resolved in-memory PNG bytes and performs strictly HTTP/JSON/SSE.
+  - In-memory Base64 data URI payload mapping: `OpenAIRequestMapper` formats `user` and `tool` messages with `image_url` parts (`data:image/png;base64,...`).
+  - Deterministic capability gate: `supports_multimodal=False` deterministically yields `PROVIDER_UNSUPPORTED` / `MultimodalUnsupportedError`.
+  - Zero filesystem writes: zero temporary image files created on disk.
+  - Privacy and log hygiene: raw image bytes and base64 strings excluded from history and message serialization.
+  - 335 pure Python unit tests and 16/16 headless Blender integration suites passing (`test_multimodal_integration.py`).
 
 ---
 
 ## Planned Future Milestones
 
 ### Milestone 7: Vision / Screenshot Grounding (Upcoming Tasks)
-- [ ] **M7 Task 2**: Multimodal Provider Integration:
-  - Extend `OpenAICompatibleProvider` to format image payloads for vision-capable models (GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro).
-  - Retrieval of cached in-memory PNG bytes via `adapter.get_viewport_screenshot(image_id)`.
 - [ ] **M7 Task 3**: Visual Scene Verification:
   - Visual sanity check comparing rendered viewport state against high-level prompt intent.
 

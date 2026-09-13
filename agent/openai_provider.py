@@ -8,6 +8,7 @@ events into ProviderStreamEvents (TextDelta, ToolCallDelta, ProviderCompleted, P
 Zero Blender (bpy) dependencies. Zero tool execution. Pure Python.
 """
 
+import base64
 from dataclasses import dataclass
 import json
 import threading
@@ -37,6 +38,11 @@ from agent.sse_parser import SSEParser, SSEParseError
 from agent.tool_call_accumulator import ToolCallAccumulator, ToolCallAccumulatorError
 
 
+class MultimodalUnsupportedError(ValueError):
+    """Raised when a multimodal image request is dispatched to an unsupported provider."""
+    pass
+
+
 class OpenAIRequestMapper:
     """Converts internal ProviderRequestContext into OpenAI Chat Completions JSON dictionary."""
 
@@ -47,22 +53,34 @@ class OpenAIRequestMapper:
         model: str,
         stream: bool = True,
         stream_options: Optional[Dict[str, Any]] = None,
+        supports_multimodal: bool = True,
     ) -> Dict[str, Any]:
         """Convert ProviderRequestContext into an OpenAI-compatible POST body dictionary.
 
         Args:
-            context: The assembled request context (messages, tools, system prompt).
+            context: The assembled request context (messages, tools, system prompt, images).
             model: Target model identifier.
             stream: Whether to request streaming (default True).
             stream_options: Optional stream options (e.g. {"include_usage": True}).
+            supports_multimodal: Whether provider supports multimodal image inputs (default True).
 
         Returns:
             Dictionary matching OpenAI Chat Completions specification.
+
+        Raises:
+            MultimodalUnsupportedError: If images are present but provider does not support multimodal.
         """
+        has_images = bool(getattr(context, "images", None))
+        if has_images and not supports_multimodal:
+            raise MultimodalUnsupportedError(
+                f"Model '{model}' does not support multimodal vision/image input."
+            )
+
+        images_dict = getattr(context, "images", None) or {}
         mapped_messages: List[Dict[str, Any]] = []
 
         for msg in context.messages:
-            mapped_messages.append(cls.map_message(msg))
+            mapped_messages.append(cls.map_message(msg, images=images_dict))
 
         body: Dict[str, Any] = {
             "model": model,
@@ -81,9 +99,31 @@ class OpenAIRequestMapper:
         return body
 
     @classmethod
-    def map_message(cls, message: ChatMessage) -> Dict[str, Any]:
-        """Convert an internal ChatMessage into an OpenAI Chat Completion message dict."""
+    def map_message(
+        cls,
+        message: ChatMessage,
+        images: Optional[Mapping[str, bytes]] = None,
+    ) -> Dict[str, Any]:
+        """Convert an internal ChatMessage into an OpenAI Chat Completion message dict.
+
+        If the message contains an image_id resolved in images, formats content as a
+        multimodal content parts array with text and image_url (data:image/png;base64,...).
+        Otherwise preserves text-only string content.
+        """
         role = message.role
+        images_dict = images or {}
+
+        # Resolve image_id from message field or tool result content
+        img_id = getattr(message, "image_id", None)
+        if not img_id and role == Role.TOOL and getattr(message, "name", None) == "capture_viewport" and message.content:
+            try:
+                content_dict = json.loads(message.content)
+                if isinstance(content_dict, dict):
+                    img_id = content_dict.get("image_id")
+            except Exception:
+                pass
+
+        has_image = bool(img_id and img_id in images_dict)
 
         if role == Role.SYSTEM:
             return {
@@ -92,6 +132,21 @@ class OpenAIRequestMapper:
             }
 
         elif role == Role.USER:
+            if has_image:
+                png_bytes = images_dict[img_id]
+                b64_str = base64.b64encode(png_bytes).decode("ascii")
+                data_uri = f"data:image/png;base64,{b64_str}"
+                parts: List[Dict[str, Any]] = []
+                if message.content:
+                    parts.append({"type": "text", "text": message.content})
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_uri},
+                })
+                return {
+                    "role": "user",
+                    "content": parts,
+                }
             return {
                 "role": "user",
                 "content": message.content or "",
@@ -122,6 +177,26 @@ class OpenAIRequestMapper:
             return d
 
         elif role == Role.TOOL:
+            if has_image:
+                png_bytes = images_dict[img_id]
+                b64_str = base64.b64encode(png_bytes).decode("ascii")
+                data_uri = f"data:image/png;base64,{b64_str}"
+                parts = [
+                    {"type": "text", "text": message.content or ""},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_uri},
+                    },
+                ]
+                d = {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": parts,
+                }
+                if message.name:
+                    d["name"] = message.name
+                return d
+
             d = {
                 "role": "tool",
                 "tool_call_id": message.tool_call_id,
@@ -146,8 +221,14 @@ class OpenAICompatibleProvider:
         config: Config,
         http_client: Optional[HttpClient] = None,
         online_access: bool = True,
+        supports_multimodal: bool = True,
     ):
         self.config = config
+        self.supports_multimodal = (
+            bool(config.supports_multimodal)
+            if hasattr(config, "supports_multimodal") and config.supports_multimodal is not None
+            else supports_multimodal
+        )
         effective_timeout = getattr(config, "timeout_seconds", getattr(config, "timeout", 30.0))
         self.http_client = http_client or HttpClient(
             base_url=config.base_url,
@@ -215,12 +296,34 @@ class OpenAICompatibleProvider:
             )
             return
 
+        # Multimodal capability check
+        has_images = bool(getattr(context, "images", None))
+        if has_images and not self.supports_multimodal:
+            yield ProviderError(
+                turn_id=turn_id,
+                type=ProviderErrorType.PROVIDER_UNSUPPORTED,
+                message=f"Model '{self.config.model}' does not support multimodal vision/image inputs.",
+                details={"model": self.config.model, "capability": "multimodal"},
+            )
+            return
+
         # 3. Assemble request payload
-        req_dict = OpenAIRequestMapper.map_request(
-            context=context,
-            model=self.config.model,
-            stream=True,
-        )
+        try:
+            req_dict = OpenAIRequestMapper.map_request(
+                context=context,
+                model=self.config.model,
+                stream=True,
+                supports_multimodal=self.supports_multimodal,
+            )
+        except MultimodalUnsupportedError as exc:
+            yield ProviderError(
+                turn_id=turn_id,
+                type=ProviderErrorType.PROVIDER_UNSUPPORTED,
+                message=str(exc),
+                details={"model": self.config.model},
+            )
+            return
+
         payload_bytes = json.dumps(
             req_dict,
             ensure_ascii=False,

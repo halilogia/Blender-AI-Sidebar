@@ -61,10 +61,10 @@ class ChatMessage:
     """Internal chat message representation for conversation turns.
 
     Enforces role-based structural validation:
-    - SYSTEM: content allowed, no tool_calls, no tool_call_id
-    - USER: content allowed, no tool_calls, no tool_call_id
+    - SYSTEM: content allowed, no tool_calls, no tool_call_id, no image_id
+    - USER: content allowed, optional image_id, no tool_calls, no tool_call_id
     - ASSISTANT: content and/or tool_calls allowed, no tool_call_id
-    - TOOL: content required, tool_call_id required, name optional, no tool_calls
+    - TOOL: content required, tool_call_id required, optional image_id, name optional, no tool_calls
     """
 
     role: Role
@@ -72,6 +72,7 @@ class ChatMessage:
     tool_calls: Optional[Tuple[ToolCall, ...]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
+    image_id: Optional[str] = None
 
     def __init__(
         self,
@@ -80,6 +81,7 @@ class ChatMessage:
         tool_calls: Optional[List[ToolCall]] = None,
         tool_call_id: Optional[str] = None,
         name: Optional[str] = None,
+        image_id: Optional[str] = None,
     ):
         # 1. Role validation and coercion
         if isinstance(role, str):
@@ -120,12 +122,19 @@ class ChatMessage:
             raise TypeError(f"name must be a string or None, got {type(name).__name__}.")
         object.__setattr__(self, "name", name)
 
-        # 6. Role-specific constraints
+        # 6. Image ID validation
+        if image_id is not None and not isinstance(image_id, str):
+            raise TypeError(f"image_id must be a string or None, got {type(image_id).__name__}.")
+        object.__setattr__(self, "image_id", image_id)
+
+        # 7. Role-specific constraints
         if self.role == Role.SYSTEM:
             if self.tool_calls:
                 raise ValueError("SYSTEM message cannot contain tool_calls.")
             if self.tool_call_id is not None:
                 raise ValueError("SYSTEM message cannot contain tool_call_id.")
+            if self.image_id is not None:
+                raise ValueError("SYSTEM message cannot contain image_id.")
 
         elif self.role == Role.USER:
             if self.tool_calls:
@@ -158,6 +167,8 @@ class ChatMessage:
             d["tool_call_id"] = self.tool_call_id
         if self.name is not None:
             d["name"] = self.name
+        if self.image_id is not None:
+            d["image_id"] = self.image_id
         return d
 
     @classmethod
@@ -172,6 +183,7 @@ class ChatMessage:
             tool_calls=tool_calls,
             tool_call_id=data.get("tool_call_id"),
             name=data.get("name"),
+            image_id=data.get("image_id"),
         )
 
 
@@ -422,6 +434,7 @@ class ProviderErrorType(str, Enum):
     TOOL_CALL_PARSE_ERROR = "TOOL_CALL_PARSE_ERROR"
     CANCELLED = "CANCELLED"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+    PROVIDER_UNSUPPORTED = "PROVIDER_UNSUPPORTED"
 
 
 @dataclass(frozen=True)
