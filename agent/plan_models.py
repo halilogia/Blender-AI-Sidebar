@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from core.types import RiskLevel, ToolError, ToolResult
 
@@ -65,16 +66,38 @@ class PlanStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+def _deep_freeze_value(val: Any) -> Any:
+    """Recursively convert nested dicts into MappingProxyType and lists into tuples."""
+    if isinstance(val, (dict, MappingProxyType)):
+        return MappingProxyType({k: _deep_freeze_value(v) for k, v in val.items()})
+    elif isinstance(val, (list, tuple)):
+        return tuple(_deep_freeze_value(v) for v in val)
+    elif isinstance(val, (set, frozenset)):
+        return frozenset(_deep_freeze_value(v) for v in val)
+    return val
+
+
+def _deep_unfreeze_value(val: Any) -> Any:
+    """Recursively convert MappingProxyType into dict and tuples into lists for JSON serialization."""
+    if isinstance(val, (MappingProxyType, dict)):
+        return {k: _deep_unfreeze_value(v) for k, v in sorted(val.items(), key=lambda x: str(x[0]))}
+    elif isinstance(val, (tuple, list)):
+        return [_deep_unfreeze_value(v) for v in val]
+    return val
+
+
 @dataclass(frozen=True)
 class PlanStep:
     """Declarative, immutable definition of a single step within an execution plan.
 
     Represents 'what should be done' in a plan. Contains zero mutable runtime state.
+    All attributes including nested argument dictionaries and sequences are deeply
+    frozen and immutable.
     """
 
     step_id: str
     tool_name: str
-    arguments: Dict[str, Any] = field(default_factory=dict)
+    arguments: Mapping[str, Any] = field(default_factory=dict)
     description: str = ""
     depends_on: Tuple[str, ...] = field(default_factory=tuple)
     expected_result: Optional[str] = None
@@ -84,8 +107,8 @@ class PlanStep:
             raise ValueError("PlanStep 'step_id' must be a non-empty string.")
         if not isinstance(self.tool_name, str) or not self.tool_name.strip():
             raise ValueError("PlanStep 'tool_name' must be a non-empty string.")
-        if not isinstance(self.arguments, dict):
-            raise TypeError(f"PlanStep 'arguments' must be a dict, got {type(self.arguments).__name__}.")
+        if not isinstance(self.arguments, (dict, MappingProxyType)):
+            raise TypeError(f"PlanStep 'arguments' must be a dict or mapping, got {type(self.arguments).__name__}.")
         if not isinstance(self.description, str):
             raise TypeError(f"PlanStep 'description' must be a string, got {type(self.description).__name__}.")
         if not isinstance(self.depends_on, (list, tuple)):
@@ -100,10 +123,11 @@ class PlanStep:
         if self.expected_result is not None and not isinstance(self.expected_result, str):
             raise TypeError(f"PlanStep 'expected_result' must be a string or None, got {type(self.expected_result).__name__}.")
 
-        # Deep freeze to enforce absolute immutability
+        # Deep freeze to enforce true recursive immutability
+        frozen_arguments = _deep_freeze_value(self.arguments)
         object.__setattr__(self, "step_id", self.step_id.strip())
         object.__setattr__(self, "tool_name", self.tool_name.strip())
-        object.__setattr__(self, "arguments", dict(self.arguments))
+        object.__setattr__(self, "arguments", frozen_arguments)
         object.__setattr__(self, "depends_on", tuple(deps))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -111,7 +135,7 @@ class PlanStep:
         d: Dict[str, Any] = {
             "step_id": self.step_id,
             "tool_name": self.tool_name,
-            "arguments": dict(sorted(self.arguments.items())),
+            "arguments": _deep_unfreeze_value(self.arguments),
             "description": self.description,
             "depends_on": list(self.depends_on),
         }
@@ -124,10 +148,13 @@ class PlanStep:
         """Deserialize plan step from dictionary with validation."""
         if not isinstance(data, dict):
             raise TypeError(f"Expected dict for PlanStep, got {type(data).__name__}.")
+        raw_args = data.get("arguments", {})
+        if not isinstance(raw_args, (dict, MappingProxyType)):
+            raw_args = {}
         return cls(
             step_id=data.get("step_id", ""),
             tool_name=data.get("tool_name", ""),
-            arguments=data.get("arguments", {}) if isinstance(data.get("arguments"), dict) else {},
+            arguments=raw_args,
             description=str(data.get("description", "")),
             depends_on=tuple(data.get("depends_on", ())),
             expected_result=data.get("expected_result"),

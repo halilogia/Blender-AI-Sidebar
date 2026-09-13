@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from types import MappingProxyType
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 import uuid
 
@@ -47,7 +48,7 @@ def validate_tool_arguments(tool: BaseTool, arguments: Any) -> List[str]:
     Returns a list of error strings, or empty list if valid.
     """
     errors: List[str] = []
-    if not isinstance(arguments, dict):
+    if not isinstance(arguments, (dict, MappingProxyType)):
         return [f"Arguments must be a dict, got {type(arguments).__name__}."]
 
     schema = getattr(tool, "input_schema", {})
@@ -110,7 +111,7 @@ def validate_tool_arguments(tool: BaseTool, arguments: Any) -> List[str]:
                                 errors.append(f"Argument '{prop_name}[{idx}]' must be an integer, got {type(item).__name__}.")
                             elif item_type == "boolean" and not isinstance(item, bool):
                                 errors.append(f"Argument '{prop_name}[{idx}]' must be a boolean, got {type(item).__name__}.")
-            elif p_type == "object" and not isinstance(prop_val, dict):
+            elif p_type == "object" and not isinstance(prop_val, (dict, MappingProxyType)):
                 errors.append(f"Argument '{prop_name}' must be an object/dict, got {type(prop_val).__name__}.")
 
     return errors

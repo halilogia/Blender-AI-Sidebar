@@ -63,11 +63,122 @@ class TestPlanModels(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             step.tool_name = "delete_object"  # type: ignore
 
-        # Mutating external dict passed into arguments must not affect step
-        external_args = {"primitive_type": "CUBE"}
-        step2 = PlanStep(step_id="step_2", tool_name="create_primitive", arguments=external_args)
-        external_args["primitive_type"] = "SPHERE"
-        self.assertEqual(step2.arguments["primitive_type"], "CUBE")
+        with self.assertRaises(FrozenInstanceError):
+            step.arguments = {}  # type: ignore
+
+    def test_plan_step_arguments_direct_mutation_rejected(self):
+        """Direct item assignment and deletion on step.arguments must be rejected."""
+        step = PlanStep(
+            step_id="step_1",
+            tool_name="create_primitive",
+            arguments={"primitive_type": "CUBE", "size": 2.0},
+        )
+
+        with self.assertRaises(TypeError):
+            step.arguments["new_key"] = "forbidden"
+
+        with self.assertRaises(TypeError):
+            step.arguments["primitive_type"] = "SPHERE"
+
+        with self.assertRaises(TypeError):
+            del step.arguments["size"]
+
+    def test_plan_step_nested_dict_mutation_rejected(self):
+        """Mutation of nested dictionaries inside step.arguments must be rejected."""
+        step = PlanStep(
+            step_id="step_1",
+            tool_name="create_primitive",
+            arguments={
+                "primitive_type": "CUBE",
+                "nested_config": {"sub_key": "original_val", "deep": {"leaf": 42}},
+            },
+        )
+
+        with self.assertRaises(TypeError):
+            step.arguments["nested_config"]["sub_key"] = "mutated"
+
+        with self.assertRaises(TypeError):
+            step.arguments["nested_config"]["deep"]["leaf"] = 999
+
+        with self.assertRaises(TypeError):
+            del step.arguments["nested_config"]["sub_key"]
+
+    def test_plan_step_nested_list_mutation_rejected(self):
+        """Mutation of nested lists/arrays inside step.arguments must be rejected."""
+        step = PlanStep(
+            step_id="step_1",
+            tool_name="create_primitive",
+            arguments={
+                "primitive_type": "CUBE",
+                "location": [1.0, 2.0, 3.0],
+                "matrix": [[1, 0], [0, 1]],
+            },
+        )
+
+        # Top-level array item assignment must raise TypeError (frozen as tuple)
+        with self.assertRaises(TypeError):
+            step.arguments["location"][0] = 99.0
+
+        # Nested 2D array item assignment must raise TypeError
+        with self.assertRaises(TypeError):
+            step.arguments["matrix"][0][0] = 99
+
+    def test_plan_step_external_mutation_isolation(self):
+        """Mutating the original dictionary or list passed into arguments must not mutate PlanStep."""
+        raw_location = [1.0, 2.0, 3.0]
+        raw_nested = {"color": "RED", "tags": ["tag1", "tag2"]}
+        raw_args = {
+            "primitive_type": "CUBE",
+            "location": raw_location,
+            "config": raw_nested,
+        }
+
+        step = PlanStep(step_id="s1", tool_name="create_primitive", arguments=raw_args)
+
+        # Mutate external inputs after creation
+        raw_args["primitive_type"] = "SPHERE"
+        raw_args["new_arg"] = "tampered"
+        raw_location.append(4.0)
+        raw_location[0] = -99.0
+        raw_nested["color"] = "BLUE"
+        raw_nested["tags"].append("evil_tag")
+
+        # Verify PlanStep remains completely untouched
+        self.assertEqual(step.arguments["primitive_type"], "CUBE")
+        self.assertNotIn("new_arg", step.arguments)
+        self.assertEqual(step.arguments["location"], (1.0, 2.0, 3.0))
+        self.assertEqual(step.arguments["config"]["color"], "RED")
+        self.assertEqual(step.arguments["config"]["tags"], ("tag1", "tag2"))
+
+    def test_plan_step_to_dict_returns_standard_json_types(self):
+        """to_dict() must return normal Python dict and list types that serialize cleanly to JSON."""
+        import json
+
+        step = PlanStep(
+            step_id="s1",
+            tool_name="create_primitive",
+            arguments={
+                "primitive_type": "CUBE",
+                "location": [1.0, 2.0, 3.0],
+                "config": {"sub_key": "val", "items": [10, 20]},
+            },
+        )
+
+        d = step.to_dict()
+        # Verify root arguments is a standard mutable dict
+        self.assertIs(type(d["arguments"]), dict)
+        # Verify nested location is a standard mutable list
+        self.assertIs(type(d["arguments"]["location"]), list)
+        self.assertEqual(d["arguments"]["location"], [1.0, 2.0, 3.0])
+        # Verify nested config is a standard mutable dict
+        self.assertIs(type(d["arguments"]["config"]), dict)
+        self.assertIs(type(d["arguments"]["config"]["items"]), list)
+
+        # JSON serialization must succeed without custom encoders
+        json_output = json.dumps(d)
+        self.assertIsInstance(json_output, str)
+        parsed = json.loads(json_output)
+        self.assertEqual(parsed["arguments"]["location"], [1.0, 2.0, 3.0])
 
     def test_plan_step_validation_on_init(self):
         """PlanStep validates required non-empty string fields and types."""
