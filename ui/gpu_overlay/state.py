@@ -30,6 +30,12 @@ class GPUOverlayState:
         self.active_tool_name: Optional[str] = None
         self.last_response_text: str = ""
 
+        # Approval Card Bounding Boxes and State
+        self.pending_approval: Optional[Dict[str, Any]] = None
+        self.approval_card_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        self.reject_btn_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        self.approve_btn_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+
     def reset_input(self) -> None:
         """Clear prompt input buffer and reset cursor."""
         self.prompt_text = ""
@@ -104,6 +110,20 @@ class GPUOverlayState:
 
     def hit_test(self, px: float, py: float) -> Optional[str]:
         """Determine which UI element (if any) contains the point (px, py)."""
+        # Check Approval Card elements if pending approval is active
+        if self.pending_approval:
+            ax, ay, aw, ah = self.approve_btn_rect
+            if ax <= px <= ax + aw and ay <= py <= ay + ah:
+                return "approve"
+
+            rx, ry, rw, rh = self.reject_btn_rect
+            if rx <= px <= rx + rw and ry <= py <= ry + rh:
+                return "reject"
+
+            cx, cy, cw, ch = self.approval_card_rect
+            if cx <= px <= cx + cw and cy <= py <= cy + ch:
+                return "approval_card"
+
         bx, by, bw, bh = self.bar_rect
         if not (bx <= px <= bx + bw and by <= py <= by + bh):
             return None

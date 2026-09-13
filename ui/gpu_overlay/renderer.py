@@ -254,32 +254,93 @@ def draw_overlay_hud(context) -> None:
     draw_text("Esc to close", p3_x + 10.0, pill_y + 6.0, size=10, color=(0.5, 0.52, 0.56, 0.9))
 
     # -------------------------------------------------------------------------
-    # 6. Upper Response Drawer (If AI is thinking or has a response)
+    # 6. Upper Drawer: Approval Card (High Priority) OR Response Drawer
     # -------------------------------------------------------------------------
-    if is_processing or overlay_state.last_response_text or overlay_state.active_tool_name:
-        resp_text = overlay_state.last_response_text
-        if is_processing and overlay_state.active_tool_name:
-            resp_text = f"Running tool: {overlay_state.active_tool_name}..."
-        elif is_processing and not resp_text:
-            resp_text = "AI Thinking..."
+    if overlay_state.pending_approval:
+        # Approval Card takes visual precedence over regular response drawer
+        appr = overlay_state.pending_approval
+        card_w = bar_w
+        card_h = 106.0
+        card_x = bar_x
+        card_y = bar_y + bar_h + 10.0
+        corner_r = 16.0
 
-        if resp_text:
-            drawer_w = bar_w
-            drawer_h = 76.0
-            drawer_x = bar_x
-            drawer_y = bar_y + bar_h + 10.0
+        overlay_state.approval_card_rect = (card_x, card_y, card_w, card_h)
 
-            # Drawer shadow & background
-            draw_rounded_shadow(drawer_x, drawer_y, drawer_w, drawer_h, corner_r, shadow_size=12.0)
-            draw_rounded_rect(drawer_x - 1, drawer_y - 1, drawer_w + 2, drawer_h + 2, corner_r + 1, (0.18, 0.19, 0.22, 0.95))
-            draw_rounded_rect(drawer_x, drawer_y, drawer_w, drawer_h, corner_r, (0.09, 0.095, 0.11, 0.96))
+        # 1. Drop shadow & glowing warning border
+        draw_rounded_shadow(card_x, card_y, card_w, card_h, corner_r, shadow_size=14.0)
+        draw_rounded_rect(card_x - 1.5, card_y - 1.5, card_w + 3.0, card_h + 3.0, corner_r + 1.0, (0.95, 0.65, 0.15, 0.95))
+        draw_rounded_rect(card_x, card_y, card_w, card_h, corner_r, (0.09, 0.095, 0.11, 0.98))
 
-            # Header
-            draw_text("🤖 Blender AI Assistant", drawer_x + 16.0, drawer_y + drawer_h - 22.0, size=11, color=(0.82, 0.99, 0.09, 0.9))
+        # 2. Header row
+        draw_text("⚠ Confirm Action", card_x + 18.0, card_y + card_h - 24.0, size=12, color=(0.96, 0.72, 0.18, 1.0))
+        appr_id = appr.get("approval_id", "")
+        if appr_id:
+            draw_text(appr_id, card_x + card_w - 110.0, card_y + card_h - 22.0, size=10, color=(0.55, 0.57, 0.62, 0.8))
 
-            # Body text (truncate if too long for one line in preview)
-            preview = resp_text[:110] + ("..." if len(resp_text) > 110 else "")
-            draw_text(preview, drawer_x + 16.0, drawer_y + 18.0, size=12, color=(0.92, 0.93, 0.95, 1.0))
+        # 3. Middle row: Action Description & Risk Badge
+        desc = appr.get("description", "Execute action")
+        draw_text(desc, card_x + 18.0, card_y + card_h - 48.0, size=14, color=(0.96, 0.96, 0.98, 1.0))
+
+        risk = str(appr.get("risk_level", "MEDIUM")).upper()
+        risk_text = f"Risk: {risk}"
+        draw_rounded_rect(card_x + card_w - 120.0, card_y + card_h - 52.0, 102.0, 20.0, 5.0, (0.95, 0.65, 0.15, 0.22))
+        draw_text(risk_text, card_x + card_w - 112.0, card_y + card_h - 46.0, size=10, color=(0.96, 0.72, 0.18, 1.0))
+
+        # 4. Bottom row: Reject and Approve Buttons
+        btn_h = 32.0
+        btn_y = card_y + 12.0
+
+        # Reject Button
+        r_w = 115.0
+        r_x = card_x + 18.0
+        overlay_state.reject_btn_rect = (r_x, btn_y, r_w, btn_h)
+        r_hover = overlay_state.hover_element == "reject"
+        r_col = (0.45, 0.12, 0.14, 1.0) if r_hover else (0.30, 0.10, 0.12, 0.95)
+        draw_rounded_rect(r_x - 1, btn_y - 1, r_w + 2, btn_h + 2, 8.0, (0.65, 0.18, 0.20, 0.8))
+        draw_rounded_rect(r_x, btn_y, r_w, btn_h, 7.0, r_col)
+        draw_text("✕ Reject (N)", r_x + 16.0, btn_y + 10.0, size=11, color=(1.0, 0.7, 0.7, 1.0))
+
+        # Approve Button
+        a_w = 125.0
+        a_x = card_x + card_w - a_w - 18.0
+        overlay_state.approve_btn_rect = (a_x, btn_y, a_w, btn_h)
+        a_hover = overlay_state.hover_element == "approve"
+        a_col = (0.88, 1.0, 0.2, 1.0) if a_hover else (0.82, 0.99, 0.09, 1.0)
+        draw_rounded_rect(a_x, btn_y, a_w, btn_h, 7.0, a_col)
+        draw_text("✓ Approve (Y)", a_x + 16.0, btn_y + 10.0, size=11, color=(0.05, 0.06, 0.07, 1.0))
+
+    else:
+        # Reset approval rects
+        overlay_state.approval_card_rect = (0.0, 0.0, 0.0, 0.0)
+        overlay_state.reject_btn_rect = (0.0, 0.0, 0.0, 0.0)
+        overlay_state.approve_btn_rect = (0.0, 0.0, 0.0, 0.0)
+
+        # Regular Response Drawer (If AI is thinking or has a response)
+        if is_processing or overlay_state.last_response_text or overlay_state.active_tool_name:
+            resp_text = overlay_state.last_response_text
+            if is_processing and overlay_state.active_tool_name:
+                resp_text = f"Running tool: {overlay_state.active_tool_name}..."
+            elif is_processing and not resp_text:
+                resp_text = "AI Thinking..."
+
+            if resp_text:
+                drawer_w = bar_w
+                drawer_h = 76.0
+                drawer_x = bar_x
+                drawer_y = bar_y + bar_h + 10.0
+
+                # Drawer shadow & background
+                draw_rounded_shadow(drawer_x, drawer_y, drawer_w, drawer_h, corner_r, shadow_size=12.0)
+                draw_rounded_rect(drawer_x - 1, drawer_y - 1, drawer_w + 2, drawer_h + 2, corner_r + 1, (0.18, 0.19, 0.22, 0.95))
+                draw_rounded_rect(drawer_x, drawer_y, drawer_w, drawer_h, corner_r, (0.09, 0.095, 0.11, 0.96))
+
+                # Header
+                draw_text("🤖 Blender AI Assistant", drawer_x + 16.0, drawer_y + drawer_h - 22.0, size=11, color=(0.82, 0.99, 0.09, 0.9))
+
+                # Body text (truncate if too long for one line in preview)
+                preview = resp_text[:110] + ("..." if len(resp_text) > 110 else "")
+                draw_text(preview, drawer_x + 16.0, drawer_y + 18.0, size=12, color=(0.92, 0.93, 0.95, 1.0))
 
     # Restore default blend state
     gpu.state.blend_set("NONE")

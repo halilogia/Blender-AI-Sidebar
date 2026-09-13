@@ -12,6 +12,7 @@ class AgentState(str, Enum):
 
     IDLE = "IDLE"
     PROCESSING = "PROCESSING"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
     EXECUTING_TOOL = "EXECUTING_TOOL"
     ERROR = "ERROR"
 
@@ -27,6 +28,13 @@ class AgentStateMachine:
         AgentState.IDLE: {AgentState.PROCESSING},
         AgentState.PROCESSING: {
             AgentState.EXECUTING_TOOL,
+            AgentState.PENDING_APPROVAL,
+            AgentState.IDLE,
+            AgentState.ERROR,
+        },
+        AgentState.PENDING_APPROVAL: {
+            AgentState.EXECUTING_TOOL,
+            AgentState.PROCESSING,
             AgentState.IDLE,
             AgentState.ERROR,
         },

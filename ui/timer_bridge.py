@@ -114,6 +114,9 @@ class TimerBridge:
                 props.current_action = "Ready"
             elif state.value == "PROCESSING":
                 props.current_action = "Thinking..."
+            elif state.value == "PENDING_APPROVAL":
+                pending = getattr(self.runtime, "pending_approval", None)
+                props.current_action = f"Approval Required: {pending.tool_name}" if pending else "Approval Required"
             elif state.value == "EXECUTING_TOOL":
                 props.current_action = "Running tool..."
             elif state.value == "ERROR":

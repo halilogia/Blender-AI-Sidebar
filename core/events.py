@@ -22,6 +22,8 @@ class EventType:
     AGENT_ERROR = "AGENT_ERROR"
     CANCEL_REQUESTED = "CANCEL_REQUESTED"
     STREAMING_TEXT_DELTA = "STREAMING_TEXT_DELTA"
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    APPROVAL_RESOLVED = "APPROVAL_RESOLVED"
     SHUTDOWN = "SHUTDOWN"
 
 
@@ -242,3 +244,69 @@ class ShutdownEvent(Event):
             timestamp=timestamp if timestamp is not None else time.time(),
             payload={"action": "shutdown"},
         )
+
+
+@dataclass
+class ApprovalRequiredEvent(Event):
+    """A gated tool call requires user confirmation before execution."""
+
+    approval_id: str = ""
+    tool_name: str = ""
+    risk_level: str = "MEDIUM"
+    description: str = ""
+
+    def __init__(
+        self,
+        approval_id: str,
+        tool_name: str,
+        risk_level: str,
+        description: str,
+        turn_id: str,
+        timestamp: Optional[float] = None,
+    ):
+        super().__init__(
+            event_type=EventType.APPROVAL_REQUIRED,
+            turn_id=turn_id,
+            timestamp=timestamp if timestamp is not None else time.time(),
+            payload={
+                "approval_id": approval_id,
+                "description": description,
+                "risk_level": risk_level,
+                "tool_name": tool_name,
+            },
+        )
+        self.approval_id = approval_id
+        self.tool_name = tool_name
+        self.risk_level = risk_level
+        self.description = description
+
+
+@dataclass
+class ApprovalResolvedEvent(Event):
+    """User approved or rejected a gated tool call."""
+
+    approval_id: str = ""
+    decision: str = ""
+    tool_name: str = ""
+
+    def __init__(
+        self,
+        approval_id: str,
+        decision: str,
+        tool_name: str,
+        turn_id: str,
+        timestamp: Optional[float] = None,
+    ):
+        super().__init__(
+            event_type=EventType.APPROVAL_RESOLVED,
+            turn_id=turn_id,
+            timestamp=timestamp if timestamp is not None else time.time(),
+            payload={
+                "approval_id": approval_id,
+                "decision": decision,
+                "tool_name": tool_name,
+            },
+        )
+        self.approval_id = approval_id
+        self.decision = decision
+        self.tool_name = tool_name

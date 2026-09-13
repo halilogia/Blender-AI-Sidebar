@@ -111,6 +111,22 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                         if overlay_state.last_response_text != runtime.last_result.final_text:
                             overlay_state.last_response_text = runtime.last_result.final_text
                             state_changed = True
+
+                    # Sync pending approval
+                    pending = getattr(runtime, "pending_approval", None)
+                    if pending:
+                        appr_dict = {
+                            "approval_id": pending.approval_id,
+                            "description": pending.human_readable_description,
+                            "risk_level": pending.risk_level.value if hasattr(pending.risk_level, "value") else str(pending.risk_level),
+                            "tool_name": pending.tool_name,
+                        }
+                        if overlay_state.pending_approval != appr_dict:
+                            overlay_state.pending_approval = appr_dict
+                            state_changed = True
+                    elif overlay_state.pending_approval is not None:
+                        overlay_state.pending_approval = None
+                        state_changed = True
             except Exception:
                 pass
 
@@ -137,7 +153,19 @@ class AISIDEBAR_OT_viewport_hud(Operator):
         # ---------------------------------------------------------------------
         if event.type == "LEFTMOUSE" and event.value == "PRESS":
             hit = overlay_state.hit_test(event.mouse_region_x, event.mouse_region_y)
-            if hit == "send":
+            if hit == "approve":
+                if overlay_state.pending_approval:
+                    appr_id = overlay_state.pending_approval["approval_id"]
+                    self.approve_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+            elif hit == "reject":
+                if overlay_state.pending_approval:
+                    appr_id = overlay_state.pending_approval["approval_id"]
+                    self.reject_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+            elif hit == "send":
                 self.submit_current_prompt()
                 self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}
@@ -145,7 +173,7 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 self.cancel_current_turn()
                 self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}
-            elif hit in ("input", "bar"):
+            elif hit in ("input", "bar", "approval_card"):
                 # Focus prompt
                 self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}
@@ -157,6 +185,26 @@ class AISIDEBAR_OT_viewport_hud(Operator):
         # 4. Keyboard Controls
         # ---------------------------------------------------------------------
         if event.value == "PRESS":
+            # If approval card is awaiting decision, intercept quick approval/rejection keys
+            if overlay_state.pending_approval:
+                appr_id = overlay_state.pending_approval["approval_id"]
+                if event.type in ("Y", "A"):
+                    self.approve_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+                elif event.type in ("N", "R"):
+                    self.reject_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+                elif event.type == "ESC":
+                    self.reject_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+                elif event.type == "RET" and not overlay_state.prompt_text:
+                    self.approve_pending_action(appr_id)
+                    self.tag_redraw_view3d(context)
+                    return {"RUNNING_MODAL"}
+
             # Esc: Close or clear
             if event.type == "ESC":
                 if overlay_state.prompt_text:
@@ -253,8 +301,31 @@ class AISIDEBAR_OT_viewport_hud(Operator):
             runtime = get_runtime()
             if runtime:
                 runtime.cancel_current_turn()
+                overlay_state.pending_approval = None
                 overlay_state.is_processing = False
                 overlay_state.status_text = "IDLE"
+        except Exception:
+            pass
+
+    def approve_pending_action(self, approval_id: str):
+        """Approve the pending action on the active agent runtime."""
+        try:
+            from ... import get_runtime
+            runtime = get_runtime()
+            if runtime:
+                runtime.approve(approval_id)
+                overlay_state.pending_approval = None
+        except Exception:
+            pass
+
+    def reject_pending_action(self, approval_id: str):
+        """Reject the pending action on the active agent runtime."""
+        try:
+            from ... import get_runtime
+            runtime = get_runtime()
+            if runtime:
+                runtime.reject(approval_id)
+                overlay_state.pending_approval = None
         except Exception:
             pass
 

@@ -12,6 +12,8 @@ from typing import Any, List, Optional, Union
 
 from core.events import (
     AgentErrorEvent,
+    ApprovalRequiredEvent,
+    ApprovalResolvedEvent,
     CancelRequestedEvent,
     Event,
     FinalResponseReadyEvent,
@@ -27,6 +29,13 @@ from core.types import ToolResult
 from agent.context_builder import ContextBuilder
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
+from agent.policy import (
+    ApprovalDecision,
+    ApprovalPolicy,
+    InvalidApprovalError,
+    NoPendingApprovalError,
+    PendingApproval,
+)
 from agent.models import (
     AgentResult,
     ChatMessage,
@@ -56,9 +65,11 @@ class AgentRuntime:
         event_queue: Optional[ThreadSafeEventQueue] = None,
         worker: Optional[AgentWorker] = None,
         max_tool_rounds: int = 5,
+        policy: Optional[ApprovalPolicy] = None,
     ):
         self.provider = provider
         self.dispatcher = dispatcher
+        self.policy = policy or ApprovalPolicy()
         self.state_machine = AgentStateMachine()
 
         self.event_queue = event_queue or ThreadSafeEventQueue()
@@ -77,9 +88,15 @@ class AgentRuntime:
         self._current_cancel_event: Optional[threading.Event] = None
         self._current_prompt: str = ""
         self._current_tool_results: List[ToolResult] = []
+        self._pending_approval: Optional[PendingApproval] = None
         self._current_metrics: Optional[TurnMetrics] = None
         self._last_result: Optional[AgentResult] = None
         self._stale_events_count: int = 0
+
+    @property
+    def pending_approval(self) -> Optional[PendingApproval]:
+        """Get the active PendingApproval awaiting user decision, if any."""
+        return self._pending_approval
 
     @property
     def current_state(self) -> AgentState:
@@ -360,6 +377,48 @@ class AgentRuntime:
                 if self._current_cancel_event and self._current_cancel_event.is_set():
                     return None
 
+                # Policy gate check
+                tool = (
+                    self.dispatcher.registry.get(tool_call.tool_name)
+                    if self.dispatcher.registry.exists(tool_call.tool_name)
+                    else None
+                )
+                decision = self.policy.evaluate(tool, tool_call)
+
+                if decision == ApprovalDecision.REQUIRE_APPROVAL:
+                    # Halt tool execution; transition to PENDING_APPROVAL
+                    pending = self.policy.create_pending_approval(
+                        turn_id=event.turn_id,
+                        tool=tool,
+                        tool_call=tool_call,
+                    )
+                    self._pending_approval = pending
+                    self.state_machine.transition_to(AgentState.PENDING_APPROVAL)
+
+                    self.history.add(
+                        item_id=f"{event.turn_id}_approval_{pending.approval_id}",
+                        turn_id=event.turn_id,
+                        kind=HistoryKind.TOOL,
+                        title=f"Approval Required: {pending.tool_name}",
+                        status="PENDING",
+                        summary=pending.human_readable_description,
+                        detail=(
+                            f"Action '{pending.tool_name}' (risk: {pending.risk_level.value}) "
+                            f"requires user confirmation.\nID: {pending.approval_id}"
+                        ),
+                    )
+
+                    self.event_queue.put(
+                        ApprovalRequiredEvent(
+                            approval_id=pending.approval_id,
+                            tool_name=pending.tool_name,
+                            risk_level=pending.risk_level.value,
+                            description=pending.human_readable_description,
+                            turn_id=event.turn_id,
+                        )
+                    )
+                    return None
+
                 self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
                 tool_res = self.dispatcher.dispatch(tool_call)
                 self._current_tool_results.append(tool_res)
@@ -483,7 +542,8 @@ class AgentRuntime:
         return None
 
     def cancel_current_turn(self) -> None:
-        """Cancel the currently active turn, discarding pending events."""
+        """Cancel the currently active turn, discarding pending events and approvals."""
+        self._pending_approval = None
         if self._current_turn_id is not None:
             if self._current_cancel_event:
                 self._current_cancel_event.set()
@@ -501,6 +561,233 @@ class AgentRuntime:
             self.event_queue.put(CancelRequestedEvent(turn_id=cancelled_turn))
             if self.state_machine.current_state != AgentState.IDLE:
                 self.state_machine.reset()
+
+    def approve(self, approval_id: str) -> Optional[AgentResult]:
+        """Approve execution of the currently pending tool call.
+
+        Validates approval_id against active pending approval and turn_id,
+        dispatches the tool on the main thread, and continues the agent loop.
+
+        Args:
+            approval_id: The unique approval identifier to execute.
+
+        Returns:
+            Optional[AgentResult]: AgentResult if turn completed, else None.
+
+        Raises:
+            NoPendingApprovalError: If no tool call is awaiting approval.
+            InvalidApprovalError: If approval_id is invalid, mismatched, or stale.
+        """
+        if self._pending_approval is None or self.state_machine.current_state != AgentState.PENDING_APPROVAL:
+            raise NoPendingApprovalError("No tool call is currently pending approval.")
+
+        if self._pending_approval.approval_id != approval_id:
+            raise InvalidApprovalError(
+                f"Approval ID mismatch: expected '{self._pending_approval.approval_id}', got '{approval_id}'."
+            )
+
+        if self._pending_approval.turn_id != self._current_turn_id:
+            raise InvalidApprovalError(
+                f"Stale approval request: pending turn '{self._pending_approval.turn_id}' does not match active turn '{self._current_turn_id}'."
+            )
+
+        if self._current_cancel_event and self._current_cancel_event.is_set():
+            self._pending_approval = None
+            return None
+
+        pending = self._pending_approval
+        # Consume pending approval immediately to prevent any duplicate execution
+        self._pending_approval = None
+
+        self.event_queue.put(
+            ApprovalResolvedEvent(
+                approval_id=approval_id,
+                decision="APPROVED",
+                tool_name=pending.tool_name,
+                turn_id=pending.turn_id,
+            )
+        )
+
+        # Transition to EXECUTING_TOOL and dispatch tool
+        self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
+        t_start = time.perf_counter()
+        tool_res = self.dispatcher.dispatch(pending.tool_call)
+        if self._current_metrics:
+            self._current_metrics.t_tools_duration += (time.perf_counter() - t_start)
+        self._current_tool_results.append(tool_res)
+
+        args_str = json.dumps(pending.tool_call.arguments, indent=2, sort_keys=True) if pending.tool_call.arguments else "{}"
+        if tool_res.success:
+            res_str = json.dumps(tool_res.data, indent=2, sort_keys=True)
+            status_badge = "OK"
+            summary_str = f"{pending.tool_name} completed."
+            tool_content = json.dumps(tool_res.data, ensure_ascii=False)
+        else:
+            res_str = f"Error: {tool_res.error.message}\nType: {tool_res.error.type}"
+            status_badge = "FAIL"
+            summary_str = f"Error: {tool_res.error.message}"
+            tool_content = json.dumps({"error": tool_res.error.message, "type": tool_res.error.type}, ensure_ascii=False)
+        detail_str = f"Tool: {pending.tool_name} (Approved)\nArguments:\n{args_str}\n\nResult:\n{res_str}"
+
+        self.conversation.add_message(
+            ChatMessage(
+                role=Role.TOOL,
+                content=tool_content,
+                tool_call_id=pending.tool_call.call_id,
+                name=pending.tool_name,
+            )
+        )
+
+        self.history.add(
+            item_id=f"{pending.turn_id}_tool_{len(self._current_tool_results)}",
+            turn_id=pending.turn_id,
+            kind=HistoryKind.TOOL,
+            title=f"Tool: {pending.tool_name} [Approved]",
+            status=status_badge,
+            summary=summary_str,
+            detail=detail_str,
+        )
+        self.event_queue.put(ToolResultReadyEvent(tool_result=tool_res, turn_id=pending.turn_id))
+
+        if not tool_res.success:
+            self.state_machine.transition_to(AgentState.ERROR)
+            if self._current_metrics:
+                self._current_metrics.t_completed = time.time()
+            err_res = AgentResult(
+                final_text=f"Tool failure: {tool_res.error.message}",
+                tool_results=list(self._current_tool_results),
+                state=AgentState.ERROR.value,
+            )
+            self._last_result = err_res
+            self.event_queue.put(
+                AgentErrorEvent(
+                    error_type="TOOL_FAILURE",
+                    message=tool_res.error.message,
+                    turn_id=pending.turn_id,
+                    details=tool_res.error.details,
+                )
+            )
+            self._current_turn_id = None
+            return err_res
+
+        self.state_machine.transition_to(AgentState.PROCESSING)
+
+        # Delegate next LLM step to worker
+        context = None
+        if hasattr(self.provider, "stream_chat"):
+            tools = self.dispatcher.registry.list()
+            context = ContextBuilder.build(
+                conversation=self.conversation,
+                tools=tools,
+            )
+
+        self.worker.submit_task(
+            turn_id=pending.turn_id,
+            prompt=self._current_prompt,
+            tool_results=list(self._current_tool_results),
+            cancel_event=self._current_cancel_event,
+            context=context,
+        )
+        return None
+
+    def reject(self, approval_id: str) -> Optional[AgentResult]:
+        """Reject execution of the currently pending tool call.
+
+        Tool is guaranteed NEVER to execute via dispatcher. Synthesizes a controlled
+        rejection ToolResult, appends it to conversation/history, and informs the LLM.
+
+        Args:
+            approval_id: The unique approval identifier to reject.
+
+        Returns:
+            Optional[AgentResult]: AgentResult if turn completed, else None.
+
+        Raises:
+            NoPendingApprovalError: If no tool call is awaiting approval.
+            InvalidApprovalError: If approval_id is invalid, mismatched, or stale.
+        """
+        if self._pending_approval is None or self.state_machine.current_state != AgentState.PENDING_APPROVAL:
+            raise NoPendingApprovalError("No tool call is currently pending approval.")
+
+        if self._pending_approval.approval_id != approval_id:
+            raise InvalidApprovalError(
+                f"Approval ID mismatch: expected '{self._pending_approval.approval_id}', got '{approval_id}'."
+            )
+
+        if self._pending_approval.turn_id != self._current_turn_id:
+            raise InvalidApprovalError(
+                f"Stale approval request: pending turn '{self._pending_approval.turn_id}' does not match active turn '{self._current_turn_id}'."
+            )
+
+        if self._current_cancel_event and self._current_cancel_event.is_set():
+            self._pending_approval = None
+            return None
+
+        pending = self._pending_approval
+        self._pending_approval = None
+
+        self.event_queue.put(
+            ApprovalResolvedEvent(
+                approval_id=approval_id,
+                decision="REJECTED",
+                tool_name=pending.tool_name,
+                turn_id=pending.turn_id,
+            )
+        )
+
+        # Create controlled rejection ToolResult without ever dispatching to adapter
+        tool_res = ToolResult.fail(
+            tool=pending.tool_name,
+            error_type="USER_REJECTED",
+            message=f"User rejected execution of tool '{pending.tool_name}'.",
+            details={"tool_name": pending.tool_name, "approval_id": approval_id},
+        )
+        self._current_tool_results.append(tool_res)
+
+        tool_content = json.dumps(
+            {"error": tool_res.error.message, "type": tool_res.error.type},
+            ensure_ascii=False,
+        )
+        detail_str = f"Tool: {pending.tool_name} (Rejected by user)\nID: {approval_id}"
+
+        self.conversation.add_message(
+            ChatMessage(
+                role=Role.TOOL,
+                content=tool_content,
+                tool_call_id=pending.tool_call.call_id,
+                name=pending.tool_name,
+            )
+        )
+
+        self.history.add(
+            item_id=f"{pending.turn_id}_tool_{len(self._current_tool_results)}",
+            turn_id=pending.turn_id,
+            kind=HistoryKind.TOOL,
+            title=f"Tool: {pending.tool_name} [Rejected]",
+            status="REJECTED",
+            summary=f"User rejected {pending.tool_name}",
+            detail=detail_str,
+        )
+        self.event_queue.put(ToolResultReadyEvent(tool_result=tool_res, turn_id=pending.turn_id))
+
+        self.state_machine.transition_to(AgentState.PROCESSING)
+
+        context = None
+        if hasattr(self.provider, "stream_chat"):
+            tools = self.dispatcher.registry.list()
+            context = ContextBuilder.build(
+                conversation=self.conversation,
+                tools=tools,
+            )
+
+        self.worker.submit_task(
+            turn_id=pending.turn_id,
+            prompt=self._current_prompt,
+            tool_results=list(self._current_tool_results),
+            cancel_event=self._current_cancel_event,
+            context=context,
+        )
+        return None
 
     def clear_history(self) -> None:
         """Clear session conversation and tool execution history."""

@@ -91,10 +91,74 @@ class AISIDEBAR_OT_clear_history(Operator):
         return {"FINISHED"}
 
 
+class AISIDEBAR_OT_approve_action(Operator):
+    """Approve the active pending tool action."""
+
+    bl_idname = "ai_sidebar.approve_action"
+    bl_label = "Approve Action"
+    bl_description = "Approve execution of currently pending tool action"
+
+    approval_id: bpy.props.StringProperty(name="Approval ID", default="")
+
+    @classmethod
+    def poll(cls, context):
+        from .. import get_runtime
+        runtime = get_runtime()
+        return runtime is not None and runtime.pending_approval is not None
+
+    def execute(self, context):
+        from .. import get_runtime
+        runtime = get_runtime()
+        if not runtime or not runtime.pending_approval:
+            self.report({"WARNING"}, "No action is currently pending approval.")
+            return {"CANCELLED"}
+
+        target_id = self.approval_id or runtime.pending_approval.approval_id
+        try:
+            runtime.approve(target_id)
+            return {"FINISHED"}
+        except Exception as exc:
+            self.report({"ERROR"}, f"Approval failed: {str(exc)}")
+            return {"CANCELLED"}
+
+
+class AISIDEBAR_OT_reject_action(Operator):
+    """Reject the active pending tool action."""
+
+    bl_idname = "ai_sidebar.reject_action"
+    bl_label = "Reject Action"
+    bl_description = "Reject execution of currently pending tool action"
+
+    approval_id: bpy.props.StringProperty(name="Approval ID", default="")
+
+    @classmethod
+    def poll(cls, context):
+        from .. import get_runtime
+        runtime = get_runtime()
+        return runtime is not None and runtime.pending_approval is not None
+
+    def execute(self, context):
+        from .. import get_runtime
+        runtime = get_runtime()
+        if not runtime or not runtime.pending_approval:
+            self.report({"WARNING"}, "No action is currently pending approval.")
+            return {"CANCELLED"}
+
+        target_id = self.approval_id or runtime.pending_approval.approval_id
+        try:
+            runtime.reject(target_id)
+            return {"FINISHED"}
+        except Exception as exc:
+            self.report({"ERROR"}, f"Rejection failed: {str(exc)}")
+            return {"CANCELLED"}
+
+
 CLASSES = (
     AISIDEBAR_OT_send_prompt,
     AISIDEBAR_OT_cancel_turn,
     AISIDEBAR_OT_clear_history,
+    AISIDEBAR_OT_approve_action,
+    AISIDEBAR_OT_reject_action,
 )
 
 
