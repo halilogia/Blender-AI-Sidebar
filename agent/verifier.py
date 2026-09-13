@@ -46,6 +46,10 @@ class ChangeVerifier:
             return self._verify_transform(target, change_set)
         elif op == "delete":
             return self._verify_delete(target, change_set)
+        elif op in ("set_material", "material"):
+            return self._verify_set_material(target, change_set)
+        elif op in ("assign_material", "assign"):
+            return self._verify_assign_material(target, change_set)
         else:
             return VerificationResult(
                 status=VerificationStatus.FAIL,
@@ -54,7 +58,7 @@ class ChangeVerifier:
                 mismatches=[
                     {
                         "property": "operation",
-                        "expected": "One of ['create', 'transform', 'delete']",
+                        "expected": "One of ['create', 'transform', 'delete', 'set_material', 'assign_material']",
                         "actual": op,
                         "diff": None,
                     }
@@ -295,6 +299,170 @@ class ChangeVerifier:
 
         return self._build_result("delete", target, mismatches)
 
+    def _compare_scalar(
+        self,
+        prop_name: str,
+        expected: Any,
+        actual: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Compare two scalar numbers within epsilon tolerance.
+
+        Returns mismatch dict if difference exceeds epsilon, else None.
+        """
+        try:
+            e_num = float(expected)
+            a_num = float(actual)
+        except (ValueError, TypeError):
+            return {
+                "property": prop_name,
+                "expected": expected,
+                "actual": actual,
+                "diff": None,
+            }
+
+        delta = a_num - e_num
+        if abs(delta) > self.epsilon:
+            return {
+                "property": prop_name,
+                "expected": round(e_num, 4),
+                "actual": round(a_num, 4),
+                "diff": round(delta, 6),
+            }
+        return None
+
+    def _verify_set_material(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for Principled BSDF material mutations."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # Material property container (can be nested under principled_bsdf or flat)
+        bsdf_actual = (
+            actual.get("principled_bsdf")
+            if isinstance(actual.get("principled_bsdf"), dict)
+            else actual
+        )
+
+        if not isinstance(bsdf_actual, dict):
+            mismatches.append(
+                {
+                    "property": "principled_bsdf",
+                    "expected": expected,
+                    "actual": None,
+                    "diff": None,
+                }
+            )
+            return self._build_result("set_material", target, mismatches)
+
+        # Verify only properties that were expected to change
+        for prop, exp_val in expected.items():
+            if prop in ("base_color", "emission_color"):
+                if prop not in bsdf_actual or bsdf_actual[prop] is None:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": exp_val,
+                            "actual": None,
+                            "diff": None,
+                        }
+                    )
+                else:
+                    mismatch = self._compare_numeric_vector(
+                        prop,
+                        exp_val,
+                        bsdf_actual[prop],
+                        is_rotation=False,
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+            elif prop in ("metallic", "roughness", "emission_strength", "alpha"):
+                if prop not in bsdf_actual or bsdf_actual[prop] is None:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": exp_val,
+                            "actual": None,
+                            "diff": None,
+                        }
+                    )
+                else:
+                    mismatch = self._compare_scalar(
+                        prop,
+                        exp_val,
+                        bsdf_actual[prop],
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+            else:
+                act_val = bsdf_actual.get(prop)
+                if act_val != exp_val:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": exp_val,
+                            "actual": act_val,
+                            "diff": None,
+                        }
+                    )
+
+        return self._build_result("set_material", target, mismatches)
+
+    def _verify_assign_material(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for material assignment to an object slot."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # 1. Object name check
+        exp_obj = expected.get("object_name")
+        if exp_obj is not None:
+            act_obj = actual.get("object_name")
+            if act_obj is None or str(act_obj).strip() != str(exp_obj).strip():
+                mismatches.append(
+                    {
+                        "property": "object_name",
+                        "expected": exp_obj,
+                        "actual": act_obj,
+                        "diff": None,
+                    }
+                )
+
+        # 2. Slot index check
+        exp_slot = expected.get("slot_index")
+        if exp_slot is not None:
+            act_slot = actual.get("slot_index")
+            if act_slot is None or int(act_slot) != int(exp_slot):
+                mismatches.append(
+                    {
+                        "property": "slot_index",
+                        "expected": int(exp_slot),
+                        "actual": int(act_slot) if act_slot is not None else None,
+                        "diff": (
+                            int(act_slot) - int(exp_slot)
+                            if act_slot is not None
+                            else None
+                        ),
+                    }
+                )
+
+        # 3. Material name check
+        exp_mat = expected.get("material_name")
+        if exp_mat is not None:
+            act_mat = actual.get("material_name")
+            if act_mat is None or str(act_mat).strip() != str(exp_mat).strip():
+                mismatches.append(
+                    {
+                        "property": "material_name",
+                        "expected": str(exp_mat).strip(),
+                        "actual": str(act_mat).strip() if act_mat is not None else None,
+                        "diff": None,
+                    }
+                )
+
+        return self._build_result("assign_material", target, mismatches)
+
     def _build_result(
         self,
         operation: str,
@@ -415,6 +583,106 @@ def build_change_set_from_result(
                 "exists": result_data.get("exists", False),
                 "deleted": result_data.get("deleted", True),
             },
+        )
+
+    elif name == "set_material":
+        target_name = str(
+            result_data.get("material_name")
+            or arguments.get("material_name")
+            or arguments.get("object_name")
+            or "Material"
+        )
+        expected_after: Dict[str, Any] = {}
+
+        if "base_color" in arguments and arguments["base_color"] is not None:
+            raw = arguments["base_color"]
+            if isinstance(raw, (list, tuple)):
+                if len(raw) == 3:
+                    expected_after["base_color"] = [
+                        max(0.0, min(1.0, float(raw[0]))),
+                        max(0.0, min(1.0, float(raw[1]))),
+                        max(0.0, min(1.0, float(raw[2]))),
+                        1.0,
+                    ]
+                elif len(raw) == 4:
+                    expected_after["base_color"] = [
+                        max(0.0, min(1.0, float(v))) for v in raw
+                    ]
+                else:
+                    expected_after["base_color"] = list(raw)
+
+        if "metallic" in arguments and arguments["metallic"] is not None:
+            try:
+                expected_after["metallic"] = max(0.0, min(1.0, float(arguments["metallic"])))
+            except (ValueError, TypeError):
+                expected_after["metallic"] = arguments["metallic"]
+
+        if "roughness" in arguments and arguments["roughness"] is not None:
+            try:
+                expected_after["roughness"] = max(0.0, min(1.0, float(arguments["roughness"])))
+            except (ValueError, TypeError):
+                expected_after["roughness"] = arguments["roughness"]
+
+        if "emission_color" in arguments and arguments["emission_color"] is not None:
+            raw = arguments["emission_color"]
+            if isinstance(raw, (list, tuple)):
+                if len(raw) == 3:
+                    expected_after["emission_color"] = [
+                        max(0.0, min(1.0, float(raw[0]))),
+                        max(0.0, min(1.0, float(raw[1]))),
+                        max(0.0, min(1.0, float(raw[2]))),
+                        1.0,
+                    ]
+                elif len(raw) == 4:
+                    expected_after["emission_color"] = [
+                        max(0.0, min(1.0, float(v))) for v in raw
+                    ]
+                else:
+                    expected_after["emission_color"] = list(raw)
+
+        if "emission_strength" in arguments and arguments["emission_strength"] is not None:
+            try:
+                expected_after["emission_strength"] = max(0.0, float(arguments["emission_strength"]))
+            except (ValueError, TypeError):
+                expected_after["emission_strength"] = arguments["emission_strength"]
+
+        if "alpha" in arguments and arguments["alpha"] is not None:
+            try:
+                expected_after["alpha"] = max(0.0, min(1.0, float(arguments["alpha"])))
+            except (ValueError, TypeError):
+                expected_after["alpha"] = arguments["alpha"]
+
+        actual_snap = result_data.get("actual") or result_data.get("after") or result_data
+        return ChangeSet(
+            operation="set_material",
+            target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(actual_snap) if isinstance(actual_snap, dict) else {},
+        )
+
+    elif name == "assign_material":
+        target_name = str(
+            arguments.get("object_name")
+            or result_data.get("object_name")
+            or "Object"
+        )
+        expected_after = {
+            "object_name": arguments.get("object_name") or result_data.get("object_name"),
+            "material_name": arguments.get("material_name") or result_data.get("material_name"),
+            "slot_index": (
+                arguments.get("slot_index")
+                if arguments.get("slot_index") is not None
+                else (result_data.get("slot_index", 0) if result_data.get("slot_index") is not None else 0)
+            ),
+        }
+        actual_snap = result_data.get("actual") or result_data.get("after") or result_data
+        return ChangeSet(
+            operation="assign_material",
+            target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(actual_snap) if isinstance(actual_snap, dict) else {},
         )
 
     return None

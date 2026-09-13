@@ -332,7 +332,11 @@ class MaterialMutator:
             else None
         )
         after_mat_name = assigned_mat.name if assigned_mat else None
-        after = {"material_name": after_mat_name}
+        after = {
+            "object_name": obj.name,
+            "slot_index": effective_slot_index,
+            "material_name": after_mat_name,
+        }
 
         # 7. Record atomic undo step
         push_undo_step(f"AI: Assign Material ({mat.name} -> {obj.name})")
