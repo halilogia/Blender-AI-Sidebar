@@ -24,6 +24,7 @@ from agent.plan_models import (
 from agent.plan_validator import PlanValidator
 from agent.policy import ApprovalDecision, ApprovalPolicy
 from agent.dispatcher import ToolDispatcher
+from agent.runtime import should_verify_visually
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
 
@@ -37,9 +38,11 @@ class PlanExecutor:
         dispatcher: Optional[ToolDispatcher] = None,
         runtime: Optional[Any] = None,
         verifier: Optional[Any] = None,
+        visual_verifier: Optional[Any] = None,
         policy: Optional[ApprovalPolicy] = None,
-        execute_fn: Optional[Callable[[ToolCall, Optional[str]], ToolResult]] = None,
+        execute_fn: Optional[Callable[..., ToolResult]] = None,
         approval_hook: Optional[Callable[[PlanStep, BaseTool], bool]] = None,
+        visual_expectations: Optional[Dict[str, str]] = None,
     ) -> None:
         if not isinstance(registry, ToolRegistry):
             raise TypeError(f"PlanExecutor requires ToolRegistry, got {type(registry).__name__}.")
@@ -48,10 +51,29 @@ class PlanExecutor:
         self.dispatcher = dispatcher
         self.runtime = runtime
         self.verifier = verifier
+        self.visual_verifier = visual_verifier
         self.policy = policy
         self.execute_fn = execute_fn
         self.approval_hook = approval_hook
+        self.visual_expectations: Dict[str, str] = dict(visual_expectations or {})
         self.validator = PlanValidator(registry)
+
+    def _resolve_visual_description(self, step: PlanStep) -> Optional[str]:
+        """Resolve explicit visual verification expectation for a plan step.
+
+        A general expected_result (e.g. 'Cube is created at world origin') represents
+        declarative semantic intent and must NOT trigger visual verification.
+        Visual verification is only triggered if:
+        1. An explicit per-step visual expectation is provided in visual_expectations, OR
+        2. The step's expected_result explicitly contains visual verification keywords.
+        """
+        if self.visual_expectations and step.step_id in self.visual_expectations:
+            return self.visual_expectations[step.step_id]
+
+        if step.expected_result and should_verify_visually(step.expected_result):
+            return step.expected_result
+
+        return None
 
     def _execute_step(
         self,
@@ -76,15 +98,20 @@ class PlanExecutor:
             arguments=dict(step.arguments),
         )
 
+        visual_desc = self._resolve_visual_description(step)
+
         # 1. Custom execute_fn takes precedence if provided (used in targeted unit tests)
         if self.execute_fn is not None:
-            return self.execute_fn(tool_call, step.expected_result)
+            try:
+                return self.execute_fn(tool_call, visual_desc)
+            except TypeError:
+                return self.execute_fn(tool_call)
 
         # 2. AgentRuntime handles dispatch + full verification pipeline on main thread
         if self.runtime is not None and hasattr(self.runtime, "execute_tool_call"):
             return self.runtime.execute_tool_call(
                 tool_call=tool_call,
-                expected_visual_description=step.expected_result,
+                expected_visual_description=visual_desc,
             )
 
         # 3. ToolDispatcher handles argument validation and adapter execution
@@ -117,6 +144,16 @@ class PlanExecutor:
                     # Preserve verification outcome in result data
                     data = dict(res.data or {})
                     data["verification"] = verif_result.to_dict()
+
+                    # Apply visual verification if explicit visual expectation is present
+                    if visual_desc and self.visual_verifier is not None:
+                        vis_result = self.visual_verifier.verify_after_mutation(
+                            semantic_result=verif_result,
+                            expected_description=visual_desc,
+                            image_id=None,
+                        )
+                        data["visual_verification"] = vis_result.to_dict()
+
                     return ToolResult.ok(tool=res.tool, data=data)
 
             return res
@@ -130,15 +167,20 @@ class PlanExecutor:
     def execute_plan(
         self,
         raw_plan: Union[Plan, Dict[str, Any], str],
+        visual_expectations: Optional[Dict[str, str]] = None,
     ) -> PlanExecutionSummary:
         """Validate and execute a multi-step plan deterministically in topological order.
 
         Args:
             raw_plan: Plan instance, dictionary, or JSON string.
+            visual_expectations: Optional mapping from step_id to explicit visual description.
 
         Returns:
             PlanExecutionSummary with final status, steps completed count, and step outcomes.
         """
+        if visual_expectations:
+            self.visual_expectations.update(visual_expectations)
+
         # 1. Strictly validate plan using PlanValidator
         validation_result = self.validator.validate(raw_plan)
         if not validation_result.valid or validation_result.plan is None:

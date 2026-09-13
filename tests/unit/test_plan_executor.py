@@ -40,6 +40,7 @@ from tools.registry import ToolRegistry
 from tools.mutations.create_primitive import CreatePrimitiveTool
 from tools.mutations.delete_object import DeleteObjectTool
 from tools.mutations.transform_object import TransformObjectTool
+from agent.visual_verifier import VisualVerificationResult, VisualVerificationStatus
 
 
 class DummyInspectTool(BaseTool):
@@ -600,7 +601,218 @@ class TestPlanExecutor(unittest.TestCase):
         self.assertEqual(summary.steps_completed, 1)
         self.adapter.create_primitive.assert_called_once()
 
-    # 17. Zero bpy dependency verification (AST inspection)
+    # 17. General expected_result does NOT trigger visual verification
+    def test_expected_result_does_not_trigger_visual_verification(self):
+        """A general expected_result (e.g. 'Cube is created at world origin') must not trigger visual verification."""
+        from agent.runtime import AgentRuntime
+
+        mock_provider = MagicMock()
+        mock_visual_verifier = MagicMock()
+        mock_semantic_verifier = MagicMock()
+        mock_verif_res = MagicMock()
+        mock_verif_res.passed = True
+        mock_verif_res.summary = "Cube verified in scene"
+        mock_verif_res.to_dict.return_value = {"passed": True, "object": "Cube"}
+        mock_semantic_verifier.verify.return_value = mock_verif_res
+
+        runtime = AgentRuntime(
+            provider=mock_provider,
+            dispatcher=self.dispatcher,
+            verifier=mock_semantic_verifier,
+            visual_verifier=mock_visual_verifier,
+        )
+
+        raw_plan = {
+            "title": "Normal Mutation Plan",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "tool_name": "create_primitive",
+                    "arguments": {"primitive_type": "CUBE"},
+                    "expected_result": "Cube is created at world origin",
+                }
+            ],
+        }
+
+        summary = runtime.execute_plan(raw_plan)
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        self.assertEqual(summary.steps_completed, 1)
+
+        # Semantic verification must run and pass
+        step_res = summary.step_results[0]
+        self.assertIn("verification", step_res.tool_result.data)
+        self.assertTrue(step_res.tool_result.data["verification"]["passed"])
+
+        # Visual verifier must NOT be called
+        mock_visual_verifier.verify_after_mutation.assert_not_called()
+        self.assertNotIn("visual_verification", step_res.tool_result.data)
+
+    # 18. Explicit visual expectation in expected_result triggers visual verification
+    def test_explicit_visual_expectation_in_expected_result_triggers_visual_verification(self):
+        """A step whose expected_result explicitly requests visual verification triggers visual verifier."""
+        from agent.runtime import AgentRuntime
+
+        mock_provider = MagicMock()
+        mock_visual_verifier = MagicMock()
+        mock_vis_res = VisualVerificationResult(
+            status=VisualVerificationStatus.PASS,
+            reason="Cube is clearly visible at origin in viewport",
+            expected_description="Visually verify that the red cube is placed at origin",
+        )
+        mock_visual_verifier.verify_after_mutation.return_value = mock_vis_res
+
+        mock_semantic_verifier = MagicMock()
+        mock_verif_res = MagicMock()
+        mock_verif_res.passed = True
+        mock_verif_res.summary = "Cube verified in scene"
+        mock_verif_res.to_dict.return_value = {"passed": True, "object": "Cube"}
+        mock_semantic_verifier.verify.return_value = mock_verif_res
+
+        runtime = AgentRuntime(
+            provider=mock_provider,
+            dispatcher=self.dispatcher,
+            verifier=mock_semantic_verifier,
+            visual_verifier=mock_visual_verifier,
+        )
+
+        raw_plan = {
+            "title": "Visual Mutation Plan",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "tool_name": "create_primitive",
+                    "arguments": {"primitive_type": "CUBE"},
+                    "expected_result": "Visually verify that the red cube is placed at origin",
+                }
+            ],
+        }
+
+        summary = runtime.execute_plan(raw_plan)
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        self.assertEqual(summary.steps_completed, 1)
+
+        # Visual verifier MUST be called with the explicit visual description
+        mock_visual_verifier.verify_after_mutation.assert_called_once()
+        _, call_kwargs = mock_visual_verifier.verify_after_mutation.call_args
+        self.assertEqual(call_kwargs["expected_description"], "Visually verify that the red cube is placed at origin")
+
+        # Both semantic verification and visual verification outcomes must be preserved
+        step_res = summary.step_results[0]
+        self.assertIn("verification", step_res.tool_result.data)
+        self.assertTrue(step_res.tool_result.data["verification"]["passed"])
+        self.assertIn("visual_verification", step_res.tool_result.data)
+        self.assertEqual(step_res.tool_result.data["visual_verification"]["status"], "PASS")
+
+    # 19. Explicit visual_expectations mapping triggers visual verification
+    def test_explicit_visual_expectations_mapping_triggers_visual_verification(self):
+        """Supplying visual_expectations mapping routes explicit visual descriptions to steps."""
+        from agent.runtime import AgentRuntime
+
+        mock_provider = MagicMock()
+        mock_visual_verifier = MagicMock()
+        mock_vis_res = VisualVerificationResult(
+            status=VisualVerificationStatus.PASS,
+            reason="Cube matches custom expectation",
+            expected_description="Visually inspect the red cube in viewport",
+        )
+        mock_visual_verifier.verify_after_mutation.return_value = mock_vis_res
+
+        mock_semantic_verifier = MagicMock()
+        mock_verif_res = MagicMock()
+        mock_verif_res.passed = True
+        mock_verif_res.summary = "Cube verified in scene"
+        mock_verif_res.to_dict.return_value = {"passed": True}
+        mock_semantic_verifier.verify.return_value = mock_verif_res
+
+        runtime = AgentRuntime(
+            provider=mock_provider,
+            dispatcher=self.dispatcher,
+            verifier=mock_semantic_verifier,
+            visual_verifier=mock_visual_verifier,
+        )
+
+        raw_plan = {
+            "title": "Mapping Plan",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "tool_name": "create_primitive",
+                    "arguments": {"primitive_type": "CUBE"},
+                    "expected_result": "Cube created at world origin",
+                }
+            ],
+        }
+
+        # Pass explicit visual expectation mapping
+        summary = runtime.execute_plan(
+            raw_plan,
+            visual_expectations={"s1": "Visually inspect the red cube in viewport"},
+        )
+        self.assertEqual(summary.status, PlanStatus.COMPLETED)
+        mock_visual_verifier.verify_after_mutation.assert_called_once()
+        _, call_kwargs = mock_visual_verifier.verify_after_mutation.call_args
+        self.assertEqual(call_kwargs["expected_description"], "Visually inspect the red cube in viewport")
+
+    # 20. Standalone PlanExecutor respects distinction between expected_result and visual expectation
+    def test_standalone_plan_executor_visual_verification_distinction(self):
+        """Standalone PlanExecutor without AgentRuntime executes visual verifier only on explicit visual expectation."""
+        mock_semantic_verifier = MagicMock()
+        mock_verif_res = MagicMock()
+        mock_verif_res.passed = True
+        mock_verif_res.summary = "Object verified"
+        mock_verif_res.to_dict.return_value = {"passed": True}
+        mock_semantic_verifier.verify.return_value = mock_verif_res
+
+        mock_visual_verifier = MagicMock()
+        mock_vis_res = VisualVerificationResult(
+            status=VisualVerificationStatus.PASS,
+            reason="Pass",
+            expected_description="Visually verify cube",
+        )
+        mock_visual_verifier.verify_after_mutation.return_value = mock_vis_res
+
+        executor = PlanExecutor(
+            registry=self.registry,
+            dispatcher=self.dispatcher,
+            verifier=mock_semantic_verifier,
+            visual_verifier=mock_visual_verifier,
+        )
+
+        # Step 1 has general expected_result -> NO visual verification
+        plan_generic = {
+            "title": "Generic Result Plan",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "tool_name": "create_primitive",
+                    "arguments": {"primitive_type": "CUBE"},
+                    "expected_result": "Cube is created at origin",
+                }
+            ],
+        }
+        res_generic = executor.execute_plan(plan_generic)
+        self.assertEqual(res_generic.status, PlanStatus.COMPLETED)
+        mock_visual_verifier.verify_after_mutation.assert_not_called()
+        self.assertNotIn("visual_verification", res_generic.step_results[0].tool_result.data)
+
+        # Step 2 has explicit visual verification in expected_result -> triggers visual verification
+        plan_visual = {
+            "title": "Explicit Visual Plan",
+            "steps": [
+                {
+                    "step_id": "s2",
+                    "tool_name": "create_primitive",
+                    "arguments": {"primitive_type": "CUBE"},
+                    "expected_result": "Visually verify cube placement",
+                }
+            ],
+        }
+        res_visual = executor.execute_plan(plan_visual)
+        self.assertEqual(res_visual.status, PlanStatus.COMPLETED)
+        mock_visual_verifier.verify_after_mutation.assert_called_once()
+        self.assertIn("visual_verification", res_visual.step_results[0].tool_result.data)
+
+    # 21. Zero bpy dependency verification (AST inspection)
     def test_no_bpy_dependency(self):
         """agent/plan_executor.py must not import or reference bpy."""
         file_path = os.path.abspath(

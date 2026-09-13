@@ -8,7 +8,7 @@ Zero Blender (bpy) dependencies. Pure Python.
 import json
 import time
 import threading
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core.events import (
     AgentErrorEvent,
@@ -85,6 +85,14 @@ VISUAL_VERIFY_KEYWORDS: Tuple[str, ...] = (
 )
 
 
+def should_verify_visually(text: Optional[str]) -> bool:
+    """Check if text or prompt explicitly requests visual scene verification."""
+    if not text or not isinstance(text, str):
+        return False
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in VISUAL_VERIFY_KEYWORDS)
+
+
 class AgentRuntime:
     """Agent execution coordinator owning lifecycle state on the main thread."""
 
@@ -106,8 +114,10 @@ class AgentRuntime:
 
         if verifier is False:
             self.verifier = None
+        elif isinstance(verifier, ChangeVerifier) or hasattr(verifier, "verify"):
+            self.verifier = verifier
         else:
-            self.verifier = verifier if isinstance(verifier, ChangeVerifier) else ChangeVerifier()
+            self.verifier = ChangeVerifier()
 
         if visual_verifier is not None:
             self.visual_verifier = visual_verifier
@@ -177,10 +187,7 @@ class AgentRuntime:
 
     def _should_verify_visually(self, prompt: Optional[str]) -> bool:
         """Check if user prompt explicitly requests visual scene verification."""
-        if not prompt or not isinstance(prompt, str):
-            return False
-        prompt_lower = prompt.lower()
-        return any(kw in prompt_lower for kw in VISUAL_VERIFY_KEYWORDS)
+        return should_verify_visually(prompt)
 
     # -------------------------------------------------------------------------
     # Execution & Verification Helper (M5 & M7)
@@ -285,6 +292,7 @@ class AgentRuntime:
         self,
         raw_plan: Any,
         approval_hook: Optional[Any] = None,
+        visual_expectations: Optional[Dict[str, str]] = None,
     ) -> Any:
         """Validate and execute a multi-step plan deterministically on the main thread."""
         from agent.plan_executor import PlanExecutor
@@ -294,8 +302,10 @@ class AgentRuntime:
             dispatcher=self.dispatcher,
             runtime=self,
             verifier=self.verifier,
+            visual_verifier=self.visual_verifier,
             policy=self.policy,
             approval_hook=approval_hook,
+            visual_expectations=visual_expectations,
         )
         return executor.execute_plan(raw_plan)
 
