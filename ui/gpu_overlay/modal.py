@@ -227,12 +227,15 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                     return {"RUNNING_MODAL"}
 
             # Backspace & Delete
-            if event.type == "BACKSPACE":
-                overlay_state.delete_backward()
+            if event.type in ("BACKSPACE", "BACK_SPACE"):
+                if event.ctrl:
+                    overlay_state.delete_word_backward()
+                else:
+                    overlay_state.delete_backward()
                 self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}
 
-            if event.type == "DEL":
+            if event.type in ("DEL", "DELETE"):
                 overlay_state.delete_forward()
                 self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}

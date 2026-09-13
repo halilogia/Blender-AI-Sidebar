@@ -284,31 +284,33 @@ def draw_overlay_hud(context) -> None:
 
         risk = str(appr.get("risk_level", "MEDIUM")).upper()
         risk_text = f"Risk: {risk}"
-        draw_rounded_rect(card_x + card_w - 120.0, card_y + card_h - 52.0, 102.0, 20.0, 5.0, (0.95, 0.65, 0.15, 0.22))
-        draw_text(risk_text, card_x + card_w - 112.0, card_y + card_h - 46.0, size=10, color=(0.96, 0.72, 0.18, 1.0))
+        draw_rounded_rect(card_x + card_w - 120.0, card_y + card_h - 52.0, 102.0, 20.0, 5.0, (0.22, 0.16, 0.08, 0.95))
+        draw_rounded_rect(card_x + card_w - 120.0, card_y + card_h - 52.0, 102.0, 20.0, 5.0, (0.85, 0.55, 0.12, 0.5))
+        draw_text(risk_text, card_x + card_w - 112.0, card_y + card_h - 46.0, size=10, color=(1.0, 0.82, 0.30, 1.0))
 
         # 4. Bottom row: Reject and Approve Buttons
         btn_h = 32.0
         btn_y = card_y + 12.0
 
-        # Reject Button
+        # Reject Button (Muted Dark Red)
         r_w = 115.0
         r_x = card_x + 18.0
         overlay_state.reject_btn_rect = (r_x, btn_y, r_w, btn_h)
         r_hover = overlay_state.hover_element == "reject"
-        r_col = (0.45, 0.12, 0.14, 1.0) if r_hover else (0.30, 0.10, 0.12, 0.95)
+        r_col = (0.45, 0.12, 0.14, 1.0) if r_hover else (0.26, 0.09, 0.11, 0.95)
         draw_rounded_rect(r_x - 1, btn_y - 1, r_w + 2, btn_h + 2, 8.0, (0.65, 0.18, 0.20, 0.8))
         draw_rounded_rect(r_x, btn_y, r_w, btn_h, 7.0, r_col)
         draw_text("✕ Reject (N)", r_x + 16.0, btn_y + 10.0, size=11, color=(1.0, 0.7, 0.7, 1.0))
 
-        # Approve Button
+        # Approve Button (Muted Dark Emerald Green with Crisp Border)
         a_w = 125.0
         a_x = card_x + card_w - a_w - 18.0
         overlay_state.approve_btn_rect = (a_x, btn_y, a_w, btn_h)
         a_hover = overlay_state.hover_element == "approve"
-        a_col = (0.88, 1.0, 0.2, 1.0) if a_hover else (0.82, 0.99, 0.09, 1.0)
+        a_col = (0.16, 0.42, 0.22, 1.0) if a_hover else (0.10, 0.26, 0.14, 0.95)
+        draw_rounded_rect(a_x - 1, btn_y - 1, a_w + 2, btn_h + 2, 8.0, (0.25, 0.75, 0.38, 0.85))
         draw_rounded_rect(a_x, btn_y, a_w, btn_h, 7.0, a_col)
-        draw_text("✓ Approve (Y)", a_x + 16.0, btn_y + 10.0, size=11, color=(0.05, 0.06, 0.07, 1.0))
+        draw_text("✓ Approve (Y)", a_x + 16.0, btn_y + 10.0, size=11, color=(0.55, 0.98, 0.65, 1.0))
 
     else:
         # Reset approval rects

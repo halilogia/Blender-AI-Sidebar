@@ -73,6 +73,18 @@ class GPUOverlayState:
             self.cursor_visible = True
             self.last_blink_time = time.time()
 
+    def delete_word_backward(self) -> None:
+        """Delete one word before cursor (Ctrl+Backspace)."""
+        if self.cursor_pos > 0:
+            left = self.prompt_text[:self.cursor_pos].rstrip()
+            last_space = left.rfind(" ")
+            new_pos = last_space + 1 if last_space != -1 else 0
+            right = self.prompt_text[self.cursor_pos:]
+            self.prompt_text = self.prompt_text[:new_pos] + right
+            self.cursor_pos = new_pos
+            self.cursor_visible = True
+            self.last_blink_time = time.time()
+
     def delete_forward(self) -> None:
         """Delete one character after the cursor (Delete)."""
         if self.cursor_pos < len(self.prompt_text):

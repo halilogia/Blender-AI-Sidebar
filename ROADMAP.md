@@ -1,6 +1,6 @@
-# Project Roadmap — Blender AI Sidebar
+# Project Roadmap — Blender AI Copilot
 
-This roadmap outlines the phased development trajectory for Blender AI Sidebar, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
+This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
 ---
 
@@ -10,11 +10,14 @@ This roadmap outlines the phased development trajectory for Blender AI Sidebar, 
 | :---: | :--- | :--- | :---: | :--- |
 | **M1** | **Grounding Copilot & Foundation** | Core domain, 5 grounding tools, async queue, native UI, headless test harness | **COMPLETED** | 56 pure Python tests, 8 Blender suites |
 | **M2** | **Real LLM / Provider Integration** | OpenAI-compatible streaming protocol, SSE parser, HTTP client, tool round-trip | **COMPLETED** | 221 pure Python tests, 9 Blender suites |
-| **M2.8** | **Streaming UI Token Updates** | Incremental token rendering in N-Panel during generation | *PLANNED* | Phase M2 polish |
-| **M3** | **Safe Mutation & Scene Editing** | Object transforms, material assignments, modifiers, collections | *PLANNED* | M3 Milestone |
-| **M4** | **Two-Tier Approval System** | Plan preview + granular user action approval | *PLANNED* | M4 Milestone |
-| **M5** | **Context Compaction & History** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M5 Milestone |
+| **M2.9** | **Native GPU Viewport HUD** | Floating in-viewport HUD (Higgsfield-inspired, pure 2D GPU, zero Chromium) | **COMPLETED** | GPU overlay integration suite, interactive HUD |
+| **M3.1** | **Safe Mutation & Undo Foundation** | `create_primitive`, `transform_object`, `delete_object`, atomic `undo_push()` | **COMPLETED** | 237 pure Python tests, 11 Blender suites |
+| **M4.1** | **Deterministic Approval Gate & HUD Card** | Centralized `ApprovalPolicy`, `PENDING_APPROVAL` gate, Viewport Approval Card | **COMPLETED** | 252 pure Python tests, 12 Blender suites |
+| **M3.2** | **Expanded Scene Mutation Tools** | Material assignment, modifier creation, parenting, collection management | *PLANNED* | M3 Milestone Phase 2 |
+| **M4.2** | **High-Level Plan Review (Tier 1)** | Multi-step plan preview and user confirmation before batch operations | *PLANNED* | M4 Milestone Phase 2 |
+| **M5** | **Context Compaction & Rolling Memory** | Token-efficient rolling memory & persistent conversation sessions | *PLANNED* | M5 Milestone |
 | **M6** | **Multimodal / Vision Grounding** | Viewport rendering capture & visual scene reasoning | *PLANNED* | M6 Milestone |
+| **M7** | **Text-to-3D Asset Generation Integration** | External 3D foundation model / API bridge (e.g. Tripo3D, Trellis, Meshy) | *PLANNED* | M7 Milestone |
 
 ---
 
@@ -49,31 +52,51 @@ This roadmap outlines the phased development trajectory for Blender AI Sidebar, 
   - Validated against 221 pure Python tests and 9 headless Blender suites.
   - Verified against local 9Router endpoint (`http://localhost:20128/v1`).
 
+### Milestone 2.9: Native In-Viewport GPU HUD
+- [x] **Higgsfield-inspired floating viewport overlay** using native Blender `gpu` and `blf` APIs.
+- [x] Zero Chromium, WebView, Qt, Skia, or web server overhead (~0 MB extra binary size).
+- [x] Full text editing buffer with cursor navigation, unicode & Turkish character support, and `Alt+Space` modal toggle.
+
+### Milestone 3.1: Safe Mutation & Undo Foundation
+- [x] **3 Core Safe Mutation Tools**:
+  - `create_primitive` (`CUBE`, `SPHERE`, `PLANE`)
+  - `transform_object` (`location`, `rotation`, `scale` with absolute and relative modes)
+  - `delete_object` (exact object name unlinking and removal)
+- [x] **Atomic Undo Integration**:
+  - Every mutating operation registers a discrete undo transaction via `push_undo_step()`.
+  - Immediate, lossless undo/redo support in Blender (`Ctrl+Z` / `Ctrl+Shift+Z`).
+- [x] **Main-Thread Strict Enforcement**: Mutations blocked from background worker threads via `assert_main_thread()`.
+
+### Milestone 4.1: Deterministic Approval Gate & Viewport Approval Card
+- [x] **Centralized Approval Policy (`ApprovalPolicy`)**:
+  - `READ_ONLY` and `LOW` risk tools auto-approved.
+  - `MEDIUM`, `HIGH`, and `CRITICAL` risk tools gated programmatically.
+  - Zero reliance on LLM conversational compliance; deterministic Python guardrail.
+- [x] **Execution Gate & State Machine**:
+  - `AgentState.PENDING_APPROVAL` lifecycle state.
+  - `PendingApproval` immutable data container with unique `approval_id`.
+  - Stale turn protection, duplicate execution prevention, and in-flight cancellation safety.
+- [x] **Viewport Approval Card**:
+  - In-viewport visual prompt with `⚠ Confirm Action`, human-readable action description, and risk badge.
+  - `[ Reject (N) ]` and `[ Approve (Y) ]` interactive buttons with mouse click and keyboard shortcuts.
+- [x] **Test Verification**:
+  - 252 pure Python unit tests passing (12/12 approval acceptance criteria).
+  - 12/12 headless Blender integration test suites passing.
+  - Verified live in real Blender GUI with 9Router.
+
 ---
 
 ## Planned Future Milestones
 
-### Milestone 2.8: Streaming UI Token Updates
-- [ ] Connect `StreamingTextDeltaEvent` to a live assistant buffer in the active UI panel.
-- [ ] Display real-time streaming tokens in the 3D Viewport sidebar as the LLM generates.
-- [ ] Maintain responsive scrolling and truncation for high-throughput responses.
+### Milestone 3.2: Expanded Scene Mutation Tools
+- [ ] `assign_material` (Apply existing materials or configure basic Principled BSDF)
+- [ ] `apply_modifier` (Subdivision surface, Bevel, Boolean)
+- [ ] `manage_collections` (Move/link objects across collections)
+- [ ] `parent_objects` (Establish parent-child hierarchies)
 
-### Milestone 3: Safe Mutation Tools
-- [ ] Implement write-capable tools with deterministic risk ratings (`RiskLevel.MUTATING`):
-  - `transform_object` (Translate, rotate, scale)
-  - `create_primitive` (Mesh primitives with configurable params)
-  - `assign_material` (Apply existing materials or create basic BSDF)
-  - `manage_collections` (Move/link objects across collections)
-  - `apply_modifier` (Subdivision, bevel, boolean)
-- [ ] Transactional undo grouping via Blender's `bpy.ops.ed.undo_push()`.
-
-### Milestone 4: Two-Tier Approval System
-- [ ] **Tier 1: High-Level Plan Review**:
-  - The agent generates a structured execution plan before mutating any scene state.
-  - User reviews proposed steps in the UI before granting execution permission.
-- [ ] **Tier 2: Granular Action Approval**:
-  - For high-risk operations (e.g. object deletion, destructive booleans), an explicit confirmation modal or button is presented.
-  - Zero unprompted destructive actions.
+### Milestone 4.2: High-Level Plan Review (Tier 1)
+- [ ] Structured multi-step execution plan generated prior to complex scene edits.
+- [ ] User review and batch approval before initiating multiple sequential tool calls.
 
 ### Milestone 5: Context Compaction & Extended Chat Sessions
 - [ ] Rolling memory window with automated summarization of older conversational turns.
@@ -82,5 +105,9 @@ This roadmap outlines the phased development trajectory for Blender AI Sidebar, 
 
 ### Milestone 6: Vision & Multimodal Grounding
 - [ ] Automated headless viewport screenshot capture (`bpy.ops.render.opengl`).
-- [ ] Image encoding and multimodal payload assembly for vision-capable models (e.g., GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro).
+- [ ] Multimodal payload assembly for vision-capable models (e.g. GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro).
 - [ ] Visual verification of framing, lighting, composition, and shader appearance.
+
+### Milestone 7: Text-to-3D Asset Generation Integration
+- [ ] External 3D generation API bridge (Tripo3D, Meshy, Rodin, Trellis).
+- [ ] `generate_3d_asset` tool dispatching prompt to text-to-3D service and automatically importing generated `.glb`/`.obj` mesh into active scene.
