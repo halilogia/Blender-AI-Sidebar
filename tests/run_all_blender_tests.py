@@ -18,6 +18,7 @@ TESTS = [
     "tests/integration/test_mutations_and_undo.py",
     "tests/integration/test_approval_integration.py",
     "tests/integration/test_verification_integration.py",
+    "tests/integration/test_material_mutations.py",
 ]
 
 BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"

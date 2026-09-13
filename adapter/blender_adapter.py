@@ -25,6 +25,7 @@ from adapter.mutators import (
     InvalidPrimitiveTypeError,
     TransformMutator,
     DeleteMutator,
+    MaterialMutator,
 )
 
 
@@ -356,3 +357,102 @@ class BlenderAdapter:
                 message=f"Unexpected error deleting object '{name}': {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
+
+    def set_material(
+        self,
+        object_name: Optional[str] = None,
+        material_name: Optional[str] = None,
+        slot_index: int = 0,
+        base_color: Optional[Any] = None,
+        metallic: Optional[float] = None,
+        roughness: Optional[float] = None,
+        emission_color: Optional[Any] = None,
+        emission_strength: Optional[float] = None,
+        alpha: Optional[float] = None,
+    ) -> ToolResult:
+        """Set Principled BSDF shader properties on an object slot or material.
+
+        Returns:
+            ToolResult conforming to set_material contract.
+        """
+        assert_main_thread()
+        tool_name = "set_material"
+
+        try:
+            data = MaterialMutator.set_material(
+                object_name=object_name,
+                material_name=material_name,
+                slot_index=slot_index,
+                base_color=base_color,
+                metallic=metallic,
+                roughness=roughness,
+                emission_color=emission_color,
+                emission_strength=emission_strength,
+                alpha=alpha,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ObjectNotFoundError as not_found:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="OBJECT_NOT_FOUND",
+                message=str(not_found),
+                details={"object_name": object_name},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"object_name": object_name, "material_name": material_name},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error setting material: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def assign_material(
+        self,
+        object_name: str,
+        material_name: str,
+        slot_index: int = 0,
+    ) -> ToolResult:
+        """Assign material to an object at the specified slot index.
+
+        Returns:
+            ToolResult conforming to assign_material contract.
+        """
+        assert_main_thread()
+        tool_name = "assign_material"
+
+        try:
+            data = MaterialMutator.assign_material(
+                object_name=object_name,
+                material_name=material_name,
+                slot_index=slot_index,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ObjectNotFoundError as not_found:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="OBJECT_NOT_FOUND",
+                message=str(not_found),
+                details={"object_name": object_name},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"object_name": object_name, "material_name": material_name},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error assigning material: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+

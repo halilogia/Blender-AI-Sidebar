@@ -38,6 +38,8 @@ from .tools.read_only.inspect_mesh import InspectMeshTool
 from .tools.mutations.create_primitive import CreatePrimitiveTool
 from .tools.mutations.transform_object import TransformObjectTool
 from .tools.mutations.delete_object import DeleteObjectTool
+from .tools.mutations.set_material import SetMaterialTool
+from .tools.mutations.assign_material import AssignMaterialTool
 from .core.config import Config
 from .agent.provider import BaseProvider
 from .agent.mock_provider import MockProvider
@@ -108,6 +110,8 @@ def register(provider: Optional[BaseProvider] = None):
     registry.register(CreatePrimitiveTool())
     registry.register(TransformObjectTool())
     registry.register(DeleteObjectTool())
+    registry.register(SetMaterialTool())
+    registry.register(AssignMaterialTool())
 
     # 3. Adapter & Dispatcher
     adapter = BlenderAdapter()
