@@ -331,7 +331,19 @@ class AgentRuntime:
         if self.state_machine.current_state in (AgentState.PENDING_APPROVAL, AgentState.EXECUTING_TOOL):
             return False
 
-        from agent.memory import compact_conversation, COMPACTION_TRIGGER_CHARS, RETAINED_TURNS_COUNT
+        from agent.memory import (
+            compact_conversation,
+            prune_conversation_tool_results,
+            COMPACTION_TRIGGER_CHARS,
+            RETAINED_TURNS_COUNT,
+        )
+
+        pruned_conv, was_pruned = prune_conversation_tool_results(
+            self.conversation,
+            retained_turns=RETAINED_TURNS_COUNT,
+        )
+        if was_pruned:
+            self.conversation = pruned_conv
 
         compacted_conv, was_compacted = compact_conversation(
             self.conversation,
@@ -340,7 +352,7 @@ class AgentRuntime:
         )
         if was_compacted:
             self.conversation = compacted_conv
-        return was_compacted
+        return was_pruned or was_compacted
 
     def submit_prompt(
         self,

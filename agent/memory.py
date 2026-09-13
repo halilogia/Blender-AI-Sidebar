@@ -1,7 +1,7 @@
 """RollingMemory and deterministic context compaction for agent conversations.
 
-Provides bounded rolling memory and context compaction for long agent conversations
-without external databases, RAG, embeddings, or LLM-based summarization.
+Provides bounded rolling memory, selective tool result pruning, and context compaction
+for long agent conversations without external databases, RAG, embeddings, or LLM-based summarization.
 Zero Blender (bpy) dependencies. Pure Python standard library.
 """
 
@@ -15,6 +15,24 @@ from agent.models import ChatMessage, Conversation, Role, ToolCall
 COMPACTION_TRIGGER_CHARS: int = 10000
 RETAINED_TURNS_COUNT: int = 2
 SUMMARY_MARKER: str = "[Context Summary & Scene Memory]"
+PRUNE_THRESHOLD_CHARS: int = 300
+
+READ_ONLY_INSPECTION_TOOLS = {
+    "inspect_mesh",
+    "inspect_scene",
+    "inspect_object",
+    "inspect_material",
+    "inspect_selection",
+    "capture_viewport",
+}
+
+MUTATION_TOOLS = {
+    "create_primitive",
+    "transform_object",
+    "delete_object",
+    "set_material",
+    "assign_material",
+}
 
 
 def calculate_messages_chars(messages: Sequence[ChatMessage]) -> int:
@@ -28,6 +46,209 @@ def calculate_messages_chars(messages: Sequence[ChatMessage]) -> int:
                 total += len(tc.call_id) + len(tc.tool_name)
                 total += len(json.dumps(tc.arguments))
     return total
+
+
+def prune_tool_message_content(tool_name: Optional[str], content: Optional[str]) -> Tuple[str, bool]:
+    """Deterministically prune verbose read-only tool results while preserving semantic integrity.
+
+    Rules:
+    - Small read-only results without large arrays remain unchanged.
+    - inspect_mesh: vertex/polygon arrays removed; object_name, vertex_count, face_count kept.
+    - inspect_scene: object list removed; summary string with object count and active object kept.
+    - inspect_object / material / selection: matrix and graph dumps removed; key attributes kept.
+    - capture_viewport: image_id removed; resolution and visual_verification kept.
+    - Mutation results: protected from aggressive pruning; verification and properties preserved.
+    - Non-JSON content: cleanly truncated with a safe marker if large.
+
+    Returns:
+        Tuple of (pruned_content_str, was_pruned_bool).
+    """
+    if not content:
+        return "", False
+
+    # Attempt to parse as JSON
+    try:
+        data = json.loads(content)
+    except Exception:
+        if len(content) > PRUNE_THRESHOLD_CHARS:
+            marker = "[PRUNED: Tool result was truncated from older turn to conserve context.]"
+            return marker, True
+        return content, False
+
+    if not isinstance(data, dict):
+        if isinstance(data, list) and len(content) > PRUNE_THRESHOLD_CHARS:
+            return json.dumps({"pruned": True, "count": len(data)}, ensure_ascii=False), True
+        return content, False
+
+    # If already pruned, check only for image_id removal
+    if data.get("pruned") is True:
+        if "image_id" in data:
+            stripped = dict(data)
+            del stripped["image_id"]
+            return json.dumps(stripped, ensure_ascii=False), True
+        return content, False
+
+    # Mutation tools are protected from aggressive pruning (Rule 10).
+    # They retain verification and core property data.
+    is_mutation = (tool_name in MUTATION_TOOLS) or (
+        "verification" in data and tool_name not in READ_ONLY_INSPECTION_TOOLS
+    )
+
+    if is_mutation:
+        # Mutation result: preserve verification and data; unlink image_id if present
+        was_mutated = False
+        pruned_mut = dict(data)
+        if "image_id" in pruned_mut:
+            del pruned_mut["image_id"]
+            was_mutated = True
+        return json.dumps(pruned_mut, ensure_ascii=False), was_mutated
+
+    # If read-only tool result is small and has no large collections, leave unchanged
+    # (except capture_viewport which unlinks ephemeral image)
+    has_large_arrays = any(isinstance(v, (list, dict)) and len(v) > 5 for v in data.values())
+    if tool_name != "capture_viewport" and len(content) < PRUNE_THRESHOLD_CHARS and not has_large_arrays:
+        return content, False
+
+    # 1. inspect_mesh
+    if tool_name == "inspect_mesh":
+        obj_name = data.get("object_name") or data.get("name") or "object"
+        counts = data.get("counts", {}) if isinstance(data.get("counts"), dict) else {}
+        v_count = (
+            data.get("vertex_count")
+            or counts.get("vertices")
+            or data.get("vertices_count")
+            or 0
+        )
+        f_count = (
+            data.get("face_count")
+            or counts.get("polygons")
+            or data.get("polygon_count")
+            or 0
+        )
+        pruned_mesh: Dict[str, Any] = {
+            "object_name": obj_name,
+            "vertex_count": v_count,
+            "face_count": f_count,
+            "pruned": True,
+        }
+        if "verification" in data:
+            pruned_mesh["verification"] = data["verification"]
+        if "visual_verification" in data:
+            pruned_mesh["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_mesh, ensure_ascii=False), True
+
+    # 2. inspect_scene
+    elif tool_name == "inspect_scene":
+        counts = data.get("counts", {}) if isinstance(data.get("counts"), dict) else {}
+        total_objs = counts.get("total")
+        if total_objs is None:
+            if "objects" in data and isinstance(data["objects"], list):
+                total_objs = len(data["objects"])
+            elif "collections" in data and isinstance(data["collections"], list):
+                total_objs = len(data["collections"])
+            else:
+                total_objs = 0
+        active_obj = data.get("active_object")
+        summary_str = f"{total_objs} objects" + (f", active='{active_obj}'" if active_obj else "")
+        pruned_scene: Dict[str, Any] = {
+            "pruned": True,
+            "summary": summary_str,
+        }
+        if "verification" in data:
+            pruned_scene["verification"] = data["verification"]
+        if "visual_verification" in data:
+            pruned_scene["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_scene, ensure_ascii=False), True
+
+    # 3. inspect_object
+    elif tool_name == "inspect_object":
+        name = data.get("name") or data.get("object_name") or "object"
+        obj_type = data.get("type", "MESH")
+        pruned_obj: Dict[str, Any] = {
+            "name": name,
+            "type": obj_type,
+            "pruned": True,
+        }
+        loc = None
+        if "location" in data:
+            loc = data["location"]
+        elif isinstance(data.get("transform"), dict) and "location" in data["transform"]:
+            loc = data["transform"]["location"]
+        if loc and isinstance(loc, (list, tuple)):
+            pruned_obj["location"] = [round(float(v), 2) for v in loc[:3]]
+        if "materials" in data and isinstance(data["materials"], list) and data["materials"]:
+            pruned_obj["materials"] = data["materials"][:5]
+        if "verification" in data:
+            pruned_obj["verification"] = data["verification"]
+        if "visual_verification" in data:
+            pruned_obj["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_obj, ensure_ascii=False), True
+
+    # 4. inspect_material
+    elif tool_name == "inspect_material":
+        mat_name = data.get("material_name") or data.get("name") or "material"
+        pruned_mat: Dict[str, Any] = {
+            "name": mat_name,
+            "pruned": True,
+        }
+        bsdf = data.get("principled_bsdf") or {}
+        for k in ("roughness", "metallic", "base_color", "emission_strength"):
+            if k in data:
+                pruned_mat[k] = data[k]
+            elif isinstance(bsdf, dict) and k in bsdf:
+                pruned_mat[k] = bsdf[k]
+        if "assigned_objects" in data and isinstance(data["assigned_objects"], list) and data["assigned_objects"]:
+            pruned_mat["assigned_objects"] = data["assigned_objects"][:5]
+        if "verification" in data:
+            pruned_mat["verification"] = data["verification"]
+        if "visual_verification" in data:
+            pruned_mat["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_mat, ensure_ascii=False), True
+
+    # 5. inspect_selection
+    elif tool_name == "inspect_selection":
+        selected_objs = data.get("selected_objects", [])
+        if not isinstance(selected_objs, list):
+            selected_objs = []
+        pruned_sel: Dict[str, Any] = {
+            "active_object": data.get("active_object"),
+            "selected_objects": selected_objs[:10],
+            "selection_count": data.get("selection_count", len(selected_objs)),
+            "pruned": True,
+        }
+        if "mode" in data:
+            pruned_sel["mode"] = data["mode"]
+        if "verification" in data:
+            pruned_sel["verification"] = data["verification"]
+        if "visual_verification" in data:
+            pruned_sel["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_sel, ensure_ascii=False), True
+
+    # 6. capture_viewport
+    elif tool_name == "capture_viewport":
+        pruned_view: Dict[str, Any] = {
+            "status": "captured",
+            "pruned": True,
+        }
+        if "width" in data and "height" in data:
+            pruned_view["resolution"] = f"{data['width']}x{data['height']}"
+        if "visual_verification" in data:
+            pruned_view["visual_verification"] = data["visual_verification"]
+        return json.dumps(pruned_view, ensure_ascii=False), True
+
+    # Generic fallback
+    summary_dict: Dict[str, Any] = {
+        "tool": tool_name or "inspection",
+        "pruned": True,
+    }
+    for key in ("name", "target_name", "object_name", "status"):
+        if key in data:
+            summary_dict[key] = data[key]
+    if "verification" in data:
+        summary_dict["verification"] = data["verification"]
+    if "visual_verification" in data:
+        summary_dict["visual_verification"] = data["visual_verification"]
+    return json.dumps(summary_dict, ensure_ascii=False), True
 
 
 class RollingMemory:
@@ -131,7 +352,6 @@ class RollingMemory:
             if isinstance(parsed, dict):
                 data = parsed
         except Exception:
-            # Not JSON content; check if error string
             if "error" in msg.content.lower():
                 self.errors.append(f"{tool_name}: {msg.content[:80]}")
             return
@@ -365,6 +585,81 @@ def partition_conversation_into_turns(
     return system_msg, prior_summary, turn_clusters
 
 
+def prune_conversation_tool_results(
+    conversation: Conversation,
+    retained_turns: int = RETAINED_TURNS_COUNT,
+) -> Tuple[Conversation, bool]:
+    """Selectively prune verbose read-only tool results in older conversation turns.
+
+    Invariants:
+    - Retains the last `retained_turns` complete turns 100% untouched.
+    - Preserves SYSTEM message.
+    - Only prunes older turns.
+    - Preserves ASSISTANT(tool_calls) -> TOOL(tool_call_id) pairing.
+    - Strips expired image_ids from older turns.
+    - Protects mutation results (preserves verification).
+    - Conversation.validate_sequence() verified before returning.
+
+    Returns:
+        Tuple of (pruned_conversation, was_pruned_boolean).
+    """
+    raw_messages = conversation.messages
+    system_msg, prior_summary, turn_clusters = partition_conversation_into_turns(raw_messages)
+
+    if len(turn_clusters) <= retained_turns:
+        return conversation, False
+
+    older_clusters = turn_clusters[:-retained_turns]
+    kept_clusters = turn_clusters[-retained_turns:]
+
+    any_pruned = False
+    pruned_older_clusters: List[List[ChatMessage]] = []
+
+    for cluster in older_clusters:
+        pruned_cluster: List[ChatMessage] = []
+        for msg in cluster:
+            if msg.role == Role.TOOL:
+                pruned_content, was_pruned = prune_tool_message_content(msg.name, msg.content)
+                if was_pruned or msg.image_id is not None:
+                    any_pruned = True
+                pruned_msg = ChatMessage(
+                    role=Role.TOOL,
+                    content=pruned_content,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                    image_id=None,  # Ephemeral image unlinking
+                )
+                pruned_cluster.append(pruned_msg)
+            elif msg.role == Role.USER:
+                if msg.image_id is not None:
+                    any_pruned = True
+                    pruned_cluster.append(ChatMessage(role=Role.USER, content=msg.content, image_id=None))
+                else:
+                    pruned_cluster.append(msg)
+            else:
+                pruned_cluster.append(msg)
+        pruned_older_clusters.append(pruned_cluster)
+
+    if not any_pruned:
+        return conversation, False
+
+    new_conv = Conversation()
+    if system_msg:
+        new_conv.add_message(system_msg)
+    if prior_summary:
+        for m in prior_summary:
+            new_conv.add_message(m)
+    for cl in pruned_older_clusters:
+        for m in cl:
+            new_conv.add_message(m)
+    for cl in kept_clusters:
+        for m in cl:
+            new_conv.add_message(m)
+
+    new_conv.validate_sequence()
+    return new_conv, True
+
+
 def compact_conversation(
     conversation: Conversation,
     trigger_chars: int = COMPACTION_TRIGGER_CHARS,
@@ -376,6 +671,9 @@ def compact_conversation(
     - SYSTEM message (index 0) is strictly preserved.
     - The last `retained_turns` complete turns are retained intact with their original messages.
     - Older turns are processed as atomic clusters; tool-call / tool-result pairs are never split.
+    - Applies selective tool result pruning first to keep conversational fidelity where possible.
+    - If pruned context is within trigger_chars, returns the pruned conversation directly.
+    - If still exceeding trigger_chars, applies RollingMemory summarization to the oldest turns.
     - Ephemeral `image_id` references from older turns are completely unlinked to prevent LRU cache misses.
     - Active / retained turn image_ids remain intact.
     - Prior summary blocks are absorbed and never miscounted as new user turns.
@@ -398,6 +696,10 @@ def compact_conversation(
     # Need more REAL turn clusters than retained_turns to perform compaction
     if len(turn_clusters) <= retained_turns:
         return conversation, False
+
+    # Apply Selective Tool Result Pruning to older turns before extracting memory
+    pruned_conv, _ = prune_conversation_tool_results(conversation, retained_turns=retained_turns)
+    system_msg, prior_summary, turn_clusters = partition_conversation_into_turns(pruned_conv.messages)
 
     older_clusters = turn_clusters[:-retained_turns]
     kept_clusters = turn_clusters[-retained_turns:]

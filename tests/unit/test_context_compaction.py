@@ -30,6 +30,8 @@ from agent.memory import (
     calculate_messages_chars,
     compact_conversation,
     partition_conversation_into_turns,
+    prune_conversation_tool_results,
+    prune_tool_message_content,
 )
 from agent.models import ChatMessage, Conversation, Role, ToolCall
 from agent.policy import ApprovalPolicy, PendingApproval
@@ -770,6 +772,427 @@ class TestContextCompaction(unittest.TestCase):
         c3.validate_sequence()
 
 
+class TestSelectiveToolResultPruning(unittest.TestCase):
+    """Test suite covering M8 Task 3 Selective Tool Result Pruning requirements."""
+
+    def test_small_read_only_result_unchanged(self):
+        """Small read-only results (<300 chars without large arrays) must remain unchanged."""
+        small_payload = json.dumps({
+            "object_name": "Cube",
+            "vertex_count": 8,
+            "face_count": 6,
+        })
+        pruned_content, was_pruned = prune_tool_message_content("inspect_mesh", small_payload)
+        self.assertFalse(was_pruned)
+        self.assertEqual(pruned_content, small_payload)
+
+        # Inside conversation pruning:
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="Sys"))
+        tc = ToolCall(call_id="c1", tool_name="inspect_mesh", arguments={"object_name": "Cube"})
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 1"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=small_payload, tool_call_id="c1", name="inspect_mesh"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 1 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 2"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+
+        pruned_conv, conv_was_pruned = prune_conversation_tool_results(conv, retained_turns=2)
+        self.assertFalse(conv_was_pruned)
+        self.assertEqual(pruned_conv.messages[3].content, small_payload)
+
+    def test_large_inspect_mesh_pruned(self):
+        """Large inspect_mesh payload must be pruned into minimal summary removing vertex/polygon arrays."""
+        large_mesh_data = {
+            "object_name": "Cube",
+            "mesh_name": "CubeMesh",
+            "counts": {
+                "vertices": 8,
+                "polygons": 6,
+                "edges": 12,
+            },
+            "polygon_breakdown": {"triangles": 0, "quads": 6, "ngons": 0},
+            "uv_layers": ["UVMap"],
+            "bounding_box": {
+                "center": [0.0, 0.0, 0.0],
+                "min": [-1.0, -1.0, -1.0],
+                "max": [1.0, 1.0, 1.0],
+            },
+            "vertices": [[float(i), float(i), 0.0] for i in range(500)],  # ~10,000 chars
+        }
+        raw_json = json.dumps(large_mesh_data)
+        self.assertGreater(len(raw_json), 300)
+
+        pruned_json, was_pruned = prune_tool_message_content("inspect_mesh", raw_json)
+        self.assertTrue(was_pruned)
+
+        parsed = json.loads(pruned_json)
+        self.assertEqual(parsed.get("object_name"), "Cube")
+        self.assertEqual(parsed.get("vertex_count"), 8)
+        self.assertEqual(parsed.get("face_count"), 6)
+        self.assertTrue(parsed.get("pruned"))
+        # Ensure giant vertex lists and bounding boxes are omitted
+        self.assertNotIn("vertices", parsed)
+        self.assertNotIn("bounding_box", parsed)
+        self.assertLess(len(pruned_json), 120)
+
+    def test_large_inspect_scene_pruned(self):
+        """Large inspect_scene payload must be pruned into minimal deterministic summary string."""
+        large_scene_data = {
+            "scene_name": "Scene",
+            "active_object": "Cube",
+            "active_camera": "Camera",
+            "active_collection": "Collection",
+            "counts": {"total": 12, "mesh": 10, "light": 1, "camera": 1},
+            "objects": [{"name": f"Obj_{i}", "type": "MESH", "is_linked": False} for i in range(12)],
+            "collections": ["Collection"],
+            "selected_objects": ["Cube"],
+            "unit_system": "METRIC",
+        }
+        raw_json = json.dumps(large_scene_data)
+        self.assertGreater(len(raw_json), 300)
+
+        pruned_json, was_pruned = prune_tool_message_content("inspect_scene", raw_json)
+        self.assertTrue(was_pruned)
+
+        parsed = json.loads(pruned_json)
+        self.assertTrue(parsed.get("pruned"))
+        self.assertEqual(parsed.get("summary"), "12 objects, active='Cube'")
+        self.assertNotIn("objects", parsed)
+
+    def test_inspect_object_material_selection_pruning(self):
+        """inspect_object, inspect_material, and inspect_selection pruned to minimal deterministic summaries."""
+        # inspect_object
+        large_obj = {
+            "name": "Suzanne",
+            "type": "MESH",
+            "transform": {
+                "location": [1.2345, 2.3456, 3.4567],
+                "rotation_euler_deg": [0.0, 0.0, 45.0],
+                "scale": [1.0, 1.0, 1.0],
+            },
+            "modifiers": [{"name": f"Subsurf_{i}", "type": "SUBSURF"} for i in range(8)],
+            "materials": ["Material_A", "Material_B"],
+            "collections": ["Col1", "Col2"],
+        }
+        pruned_obj_json, was_pruned = prune_tool_message_content("inspect_object", json.dumps(large_obj))
+        self.assertTrue(was_pruned)
+        parsed_obj = json.loads(pruned_obj_json)
+        self.assertEqual(parsed_obj["name"], "Suzanne")
+        self.assertEqual(parsed_obj["type"], "MESH")
+        self.assertEqual(parsed_obj["location"], [1.23, 2.35, 3.46])
+        self.assertEqual(parsed_obj["materials"], ["Material_A", "Material_B"])
+        self.assertTrue(parsed_obj["pruned"])
+        self.assertNotIn("modifiers", parsed_obj)
+
+        # inspect_material
+        large_mat = {
+            "material_name": "Gold_Metallic",
+            "principled_bsdf": {
+                "base_color": [1.0, 0.85, 0.57, 1.0],
+                "metallic": 1.0,
+                "roughness": 0.15,
+                "emission_strength": 0.0,
+            },
+            "node_summary": {"node_count": 20, "node_types": ["BSDF_PRINCIPLED", "TEX_IMAGE", "MAPPING", "COORD"]},
+            "assigned_objects": [f"Object_{i}" for i in range(12)],
+        }
+        pruned_mat_json, was_pruned = prune_tool_message_content("inspect_material", json.dumps(large_mat))
+        self.assertTrue(was_pruned)
+        parsed_mat = json.loads(pruned_mat_json)
+        self.assertEqual(parsed_mat["name"], "Gold_Metallic")
+        self.assertEqual(parsed_mat["metallic"], 1.0)
+        self.assertEqual(parsed_mat["roughness"], 0.15)
+        self.assertTrue(parsed_mat["pruned"])
+        self.assertNotIn("node_summary", parsed_mat)
+
+        # inspect_selection
+        large_sel = {
+            "active_object": "Suzanne",
+            "mode": "OBJECT",
+            "selected_objects": [f"Obj_{i}" for i in range(25)],
+            "selection_count": 25,
+        }
+        pruned_sel_json, was_pruned = prune_tool_message_content("inspect_selection", json.dumps(large_sel))
+        self.assertTrue(was_pruned)
+        parsed_sel = json.loads(pruned_sel_json)
+        self.assertEqual(parsed_sel["active_object"], "Suzanne")
+        self.assertEqual(parsed_sel["mode"], "OBJECT")
+        self.assertEqual(parsed_sel["selection_count"], 25)
+        self.assertEqual(len(parsed_sel["selected_objects"]), 10)  # Capped to 10
+        self.assertTrue(parsed_sel["pruned"])
+
+    def test_mutation_result_protected_from_aggressive_pruning(self):
+        """Mutation tool results must NOT be aggressively pruned into generic inspection summaries."""
+        mutation_payload = {
+            "name": "Sphere",
+            "location": [0.0, 2.0, 1.0],
+            "primitive_type": "SPHERE",
+            "verification": {
+                "status": "PASS",
+                "operation": "create",
+                "target_name": "Sphere",
+                "verified_properties": ["location", "primitive_type"],
+            },
+        }
+        pruned_mut_json, was_pruned = prune_tool_message_content("create_primitive", json.dumps(mutation_payload))
+        self.assertFalse(was_pruned)
+        parsed = json.loads(pruned_mut_json)
+        self.assertEqual(parsed["name"], "Sphere")
+        self.assertEqual(parsed["primitive_type"], "SPHERE")
+        self.assertEqual(parsed["location"], [0.0, 2.0, 1.0])
+        self.assertIn("verification", parsed)
+        self.assertEqual(parsed["verification"]["status"], "PASS")
+
+    def test_verification_field_preserved(self):
+        """The verification field must be preserved across both mutation and read-only tool results."""
+        payload_with_verif = {
+            "object_name": "Cube",
+            "counts": {"vertices": 500, "polygons": 400},
+            "vertices": [[0.0, 0.0, 0.0] for _ in range(500)],
+            "verification": {
+                "status": "PASS",
+                "target_name": "Cube",
+            },
+        }
+        pruned_json, was_pruned = prune_tool_message_content("inspect_mesh", json.dumps(payload_with_verif))
+        self.assertTrue(was_pruned)
+        parsed = json.loads(pruned_json)
+        self.assertIn("verification", parsed)
+        self.assertEqual(parsed["verification"]["status"], "PASS")
+
+    def test_visual_verification_preserved_and_image_id_stripped(self):
+        """visual_verification is retained while ephemeral image_id is completely unlinked."""
+        viewport_payload = {
+            "image_id": "old_viewport_screenshot_888",
+            "width": 1920,
+            "height": 1080,
+            "visual_verification": {
+                "decision": "PASS",
+                "rationale": "Red cube is centered in viewport.",
+            },
+        }
+        pruned_json, was_pruned = prune_tool_message_content("capture_viewport", json.dumps(viewport_payload))
+        self.assertTrue(was_pruned)
+        parsed = json.loads(pruned_json)
+        self.assertNotIn("image_id", parsed)
+        self.assertEqual(parsed.get("resolution"), "1920x1080")
+        self.assertIn("visual_verification", parsed)
+        self.assertEqual(parsed["visual_verification"]["decision"], "PASS")
+        self.assertEqual(parsed["visual_verification"]["rationale"], "Red cube is centered in viewport.")
+
+    def test_last_two_turns_protected_from_pruning(self):
+        """Last 2 complete turns (and active turn) must remain 100% untouched by pruning."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System instructions"))
+
+        large_vertices = [[float(i), 0.0, 0.0] for i in range(400)]
+
+        # Turn 1: Older turn with heavy inspect_mesh
+        tc1 = ToolCall(call_id="call_t1", tool_name="inspect_mesh", arguments={"object_name": "T1Mesh"})
+        res1 = json.dumps({"object_name": "T1Mesh", "counts": {"vertices": 400, "polygons": 300}, "vertices": large_vertices})
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 1 prompt"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc1]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res1, tool_call_id="call_t1", name="inspect_mesh"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 1 reply"))
+
+        # Turn 2: Older turn with heavy inspect_scene
+        tc2 = ToolCall(call_id="call_t2", tool_name="inspect_scene", arguments={})
+        res2 = json.dumps({"counts": {"total": 50}, "active_object": "T1Mesh", "objects": [{"name": f"O_{i}"} for i in range(50)]})
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 2 prompt"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc2]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res2, tool_call_id="call_t2", name="inspect_scene"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 reply"))
+
+        # Turn 3: Retained turn (penultimate) with heavy inspect_mesh
+        tc3 = ToolCall(call_id="call_t3", tool_name="inspect_mesh", arguments={"object_name": "T3Mesh"})
+        res3 = json.dumps({"object_name": "T3Mesh", "counts": {"vertices": 400, "polygons": 300}, "vertices": large_vertices})
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3 prompt"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc3]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res3, tool_call_id="call_t3", name="inspect_mesh"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 3 reply"))
+
+        # Turn 4: Retained active turn with image_id
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 4 active prompt", image_id="active_img_999"))
+
+        pruned_conv, was_pruned = prune_conversation_tool_results(conv, retained_turns=2)
+        self.assertTrue(was_pruned)
+
+        # Turn 1 and Turn 2 tool messages MUST be pruned
+        t1_tool_msg = [m for m in pruned_conv.messages if m.tool_call_id == "call_t1"][0]
+        t1_data = json.loads(t1_tool_msg.content)
+        self.assertTrue(t1_data.get("pruned"))
+        self.assertNotIn("vertices", t1_data)
+
+        t2_tool_msg = [m for m in pruned_conv.messages if m.tool_call_id == "call_t2"][0]
+        t2_data = json.loads(t2_tool_msg.content)
+        self.assertTrue(t2_data.get("pruned"))
+        self.assertEqual(t2_data.get("summary"), "50 objects, active='T1Mesh'")
+
+        # Turn 3 tool message MUST be 100% UNTOUCHED (still contains all vertices)
+        t3_tool_msg = [m for m in pruned_conv.messages if m.tool_call_id == "call_t3"][0]
+        t3_data = json.loads(t3_tool_msg.content)
+        self.assertNotIn("pruned", t3_data)
+        self.assertIn("vertices", t3_data)
+        self.assertEqual(len(t3_data["vertices"]), 400)
+
+        # Turn 4 image_id MUST remain intact
+        active_user_msg = pruned_conv.messages[-1]
+        self.assertEqual(active_user_msg.image_id, "active_img_999")
+
+        # Sequence validation passes
+        pruned_conv.validate_sequence()
+
+    def test_tool_call_sequence_valid_after_pruning(self):
+        """Tool call / tool result sequence and message pairing must remain 100% valid after pruning."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        tc_a = ToolCall(call_id="call_a", tool_name="inspect_mesh", arguments={"object_name": "ObjA"})
+        tc_b = ToolCall(call_id="call_b", tool_name="inspect_scene", arguments={})
+        res_a = json.dumps({"object_name": "ObjA", "counts": {"vertices": 100, "polygons": 50}, "vertices": [[0,0,0]] * 100})
+        res_b = json.dumps({"counts": {"total": 10}, "objects": [{"name": f"O_{i}"} for i in range(10)]})
+
+        # Turn 1: Assistant calls TWO tools in parallel
+        conv.add_message(ChatMessage(role=Role.USER, content="Run inspections"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc_a, tc_b]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res_a, tool_call_id="call_a", name="inspect_mesh"))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=res_b, tool_call_id="call_b", name="inspect_scene"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Inspections complete"))
+
+        # Retained Turns 2 and 3
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 2"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 done"))
+        conv.add_message(ChatMessage(role=Role.USER, content="Turn 3"))
+
+        pruned_conv, was_pruned = prune_conversation_tool_results(conv, retained_turns=2)
+        self.assertTrue(was_pruned)
+
+        # validate_sequence verifies:
+        # - System message at index 0
+        # - ASSISTANT(tool_calls) followed immediately by matching TOOL messages for call_a and call_b
+        # - Valid alternating user/assistant structure
+        pruned_conv.validate_sequence()
+
+        # Check call pairing
+        asst_msg = pruned_conv.messages[2]
+        self.assertEqual(len(asst_msg.tool_calls), 2)
+        tool_msg_1 = pruned_conv.messages[3]
+        tool_msg_2 = pruned_conv.messages[4]
+        self.assertEqual(tool_msg_1.tool_call_id, "call_a")
+        self.assertEqual(tool_msg_2.tool_call_id, "call_b")
+
+    def test_successive_compaction_with_pruning(self):
+        """Successive compactions and prunings maintain stability and prune newly aged turns."""
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.SYSTEM, content="System"))
+
+        large_verts = [[float(i), 0.0, 0.0] for i in range(300)]
+
+        # Turn 1 (heavy)
+        tc1 = ToolCall(call_id="c1", tool_name="inspect_mesh", arguments={"object_name": "M1"})
+        conv.add_message(ChatMessage(role=Role.USER, content="T1"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc1]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=json.dumps({"object_name": "M1", "counts": {"vertices": 300, "polygons": 200}, "vertices": large_verts}), tool_call_id="c1", name="inspect_mesh"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="T1 done"))
+
+        # Turn 2
+        conv.add_message(ChatMessage(role=Role.USER, content="T2"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="T2 done"))
+
+        # Turn 3 (heavy)
+        tc3 = ToolCall(call_id="c3", tool_name="inspect_scene", arguments={})
+        conv.add_message(ChatMessage(role=Role.USER, content="T3"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc3]))
+        conv.add_message(ChatMessage(role=Role.TOOL, content=json.dumps({"counts": {"total": 20}, "objects": [{"name": f"O_{i}"} for i in range(20)]}), tool_call_id="c3", name="inspect_scene"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, content="T3 done"))
+
+        # Turn 4
+        conv.add_message(ChatMessage(role=Role.USER, content="T4"))
+
+        # --- Round 1: Turn 1 & 2 are older; Turn 3 & 4 are retained ---
+        c1, w1 = prune_conversation_tool_results(conv, retained_turns=2)
+        self.assertTrue(w1)
+        # Turn 1 was pruned; Turn 3 was retained intact
+        c1_t1_tool = [m for m in c1.messages if m.tool_call_id == "c1"][0]
+        self.assertTrue(json.loads(c1_t1_tool.content)["pruned"])
+        c1_t3_tool = [m for m in c1.messages if m.tool_call_id == "c3"][0]
+        self.assertNotIn("pruned", json.loads(c1_t3_tool.content))
+
+        # Add Turn 5 and Turn 6 -> Now Turn 3 becomes an older turn!
+        c1.add_message(ChatMessage(role=Role.ASSISTANT, content="T4 done"))
+        c1.add_message(ChatMessage(role=Role.USER, content="T5"))
+        c1.add_message(ChatMessage(role=Role.ASSISTANT, content="T5 done"))
+        c1.add_message(ChatMessage(role=Role.USER, content="T6 active"))
+
+        # --- Round 2: Turn 3 is now an older turn! ---
+        c2, w2 = prune_conversation_tool_results(c1, retained_turns=2)
+        self.assertTrue(w2)
+        # Turn 3 tool is now pruned!
+        c2_t3_tool = [m for m in c2.messages if m.tool_call_id == "c3"][0]
+        self.assertTrue(json.loads(c2_t3_tool.content)["pruned"])
+
+        # Turn 1 tool remains safely pruned without double-pruning corruption
+        c2_t1_tool = [m for m in c2.messages if m.tool_call_id == "c1"][0]
+        self.assertTrue(json.loads(c2_t1_tool.content)["pruned"])
+
+        c1.validate_sequence()
+        c2.validate_sequence()
+
+    def test_runtime_history_unchanged_by_pruning(self):
+        """RuntimeHistory items must NEVER be mutated or lost during selective tool pruning."""
+        dispatcher = ToolDispatcher(registry=ToolRegistry(), adapter=MockAdapter())
+        provider = MagicMock()
+        runtime = AgentRuntime(provider=provider, dispatcher=dispatcher)
+
+        # Record history items
+        for i in range(4):
+            runtime.history.add(
+                item_id=f"hist_{i}",
+                turn_id=f"t_{i}",
+                kind=HistoryKind.TOOL,
+                title=f"Tool Execution {i}",
+                summary=f"Summary {i}",
+                detail=f"Detail {i}",
+            )
+        initial_history_len = len(runtime.history.items)
+
+        # Add older turn with large inspect_mesh to runtime conversation
+        tc = ToolCall(call_id="c_h", tool_name="inspect_mesh", arguments={"object_name": "HMesh"})
+        res_h = json.dumps({"object_name": "HMesh", "counts": {"vertices": 500, "polygons": 400}, "vertices": [[1,2,3]] * 500})
+        runtime.conversation.add_message(ChatMessage(role=Role.SYSTEM, content="Sys"))
+        runtime.conversation.add_message(ChatMessage(role=Role.USER, content="Inspect mesh"))
+        runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content=None, tool_calls=[tc]))
+        runtime.conversation.add_message(ChatMessage(role=Role.TOOL, content=res_h, tool_call_id="c_h", name="inspect_mesh"))
+        runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Inspected"))
+        runtime.conversation.add_message(ChatMessage(role=Role.USER, content="Turn 2"))
+        runtime.conversation.add_message(ChatMessage(role=Role.ASSISTANT, content="Turn 2 done"))
+        runtime.conversation.add_message(ChatMessage(role=Role.USER, content="Turn 3 active"))
+
+        # Trigger runtime compaction/pruning
+        runtime._maybe_compact_context()
+
+        # History items must be EXACTLY identical
+        self.assertEqual(len(runtime.history.items), initial_history_len)
+        for i in range(4):
+            item = runtime.history.get_by_id(f"hist_{i}")
+            self.assertIsNotNone(item)
+            self.assertEqual(item.title, f"Tool Execution {i}")
+            self.assertEqual(item.detail, f"Detail {i}")
+
+    def test_non_json_content_safe_marker(self):
+        """Non-JSON large tool result is deterministically replaced with a safe marker."""
+        huge_raw_text = "RAW_UNSTRUCTURED_DATA_" * 50
+        pruned_content, was_pruned = prune_tool_message_content("unknown_tool", huge_raw_text)
+        self.assertTrue(was_pruned)
+        self.assertEqual(
+            pruned_content,
+            "[PRUNED: Tool result was truncated from older turn to conserve context.]",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
