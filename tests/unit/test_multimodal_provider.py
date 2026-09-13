@@ -16,7 +16,8 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from agent.context_builder import ContextBuilder, ProviderRequestContext
+from agent.context_builder import ContextBuilder, ImageResolutionError, ProviderRequestContext
+from agent.history import HistoryKind
 from agent.models import (
     ChatMessage,
     Conversation,
@@ -30,6 +31,8 @@ from agent.openai_provider import (
     OpenAICompatibleProvider,
     OpenAIRequestMapper,
 )
+from agent.runtime import AgentRuntime
+from agent.state_machine import AgentState
 from core.config import Config
 from core.types import ToolResult
 
@@ -154,18 +157,30 @@ class TestContextBuilderMultimodal(unittest.TestCase):
         self.assertIn("vp_captured", ctx.images)
         self.assertEqual(ctx.images["vp_captured"], png_data)
 
-    def test_unresolvable_image_id_handled_gracefully(self):
+    def test_unresolvable_image_id_raises_deterministic_error(self):
         conv = Conversation()
         conv.add_message(ChatMessage(role=Role.USER, content="Describe", image_id="vp_missing"))
 
         def empty_resolver(img_id: str):
             return None
 
-        ctx = ContextBuilder.build(
-            conversation=conv,
-            image_resolver=empty_resolver,
-        )
-        self.assertEqual(ctx.images, {})
+        with self.assertRaises(ImageResolutionError) as ctx_err:
+            ContextBuilder.build(
+                conversation=conv,
+                image_resolver=empty_resolver,
+            )
+        self.assertEqual(ctx_err.exception.image_id, "vp_missing")
+
+    def test_missing_image_resolver_with_image_id_raises_error(self):
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.USER, content="Describe", image_id="vp_missing"))
+
+        with self.assertRaises(ImageResolutionError) as ctx_err:
+            ContextBuilder.build(
+                conversation=conv,
+                image_resolver=None,
+            )
+        self.assertEqual(ctx_err.exception.image_id, "vp_missing")
 
 
 class TestOpenAIRequestMapperMultimodal(unittest.TestCase):
@@ -217,9 +232,10 @@ class TestOpenAIRequestMapperMultimodal(unittest.TestCase):
 
     def test_tool_multimodal_mapping_to_openai_format(self):
         png_data = make_dummy_png()
+        tool_content_str = json.dumps({"image_id": "vp_img", "status": "OK"})
         msg = ChatMessage(
             role=Role.TOOL,
-            content=json.dumps({"image_id": "vp_img", "status": "OK"}),
+            content=tool_content_str,
             tool_call_id="call_vp",
             name="capture_viewport",
             image_id="vp_img",
@@ -232,16 +248,42 @@ class TestOpenAIRequestMapperMultimodal(unittest.TestCase):
         )
         body = OpenAIRequestMapper.map_request(ctx, model="gpt-4o")
 
+        # OpenAI Chat Completions API spec:
+        # role="tool" content MUST be string
         tool_msg = body["messages"][0]
         self.assertEqual(tool_msg["role"], "tool")
         self.assertEqual(tool_msg["tool_call_id"], "call_vp")
-        self.assertIsInstance(tool_msg["content"], list)
+        self.assertIsInstance(tool_msg["content"], str)
+        self.assertEqual(tool_msg["content"], tool_content_str)
 
-        # Image part present and valid
-        image_part = tool_msg["content"][1]
+        # Accompanying user message carries the image_url content-part
+        user_img_msg = body["messages"][1]
+        self.assertEqual(user_img_msg["role"], "user")
+        self.assertIsInstance(user_img_msg["content"], list)
+        self.assertEqual(user_img_msg["content"][0]["type"], "text")
+        self.assertIn("vp_img", user_img_msg["content"][0]["text"])
+
+        image_part = user_img_msg["content"][1]
         self.assertEqual(image_part["type"], "image_url")
         b64_str = image_part["image_url"]["url"].split("data:image/png;base64,")[1]
         self.assertEqual(base64.b64decode(b64_str), png_data)
+
+    def test_tool_with_image_id_missing_from_images_raises_image_resolution_error(self):
+        msg = ChatMessage(
+            role=Role.TOOL,
+            content=json.dumps({"image_id": "vp_lost"}),
+            tool_call_id="call_1",
+            image_id="vp_lost",
+        )
+        ctx = ProviderRequestContext(
+            messages=[msg],
+            tools=[],
+            system_prompt="System",
+            images={},  # missing
+        )
+        with self.assertRaises(ImageResolutionError) as cm:
+            OpenAIRequestMapper.map_request(ctx, model="gpt-4o")
+        self.assertEqual(cm.exception.image_id, "vp_lost")
 
     def test_unsupported_multimodal_raises_deterministic_error(self):
         png_data = make_dummy_png()
@@ -285,6 +327,27 @@ class TestOpenAICompatibleProviderMultimodal(unittest.TestCase):
         self.assertIsInstance(err, ProviderError)
         self.assertEqual(err.type, ProviderErrorType.PROVIDER_UNSUPPORTED)
         self.assertIn("does not support multimodal", err.message)
+
+    def test_missing_image_yields_image_not_found_provider_error(self):
+        config = Config(
+            base_url="http://localhost:11434/v1",
+            model="gpt-4o",
+        )
+        provider = OpenAICompatibleProvider(config=config, supports_multimodal=True)
+        msg = ChatMessage(role=Role.USER, content="Look", image_id="vp_not_in_dict")
+        ctx = ProviderRequestContext(
+            messages=[msg],
+            tools=[],
+            system_prompt="System",
+            images={},  # Missing
+        )
+
+        events = list(provider.stream_chat(ctx, turn_id="turn_err"))
+        self.assertEqual(len(events), 1)
+        err = events[0]
+        self.assertIsInstance(err, ProviderError)
+        self.assertEqual(err.type, ProviderErrorType.IMAGE_NOT_FOUND)
+        self.assertEqual(err.details.get("image_id"), "vp_not_in_dict")
 
     def test_multimodal_dispatches_proper_payload_without_disk_writes(self):
         config = Config(
@@ -390,15 +453,52 @@ class TestEndToEndMultimodalChain(unittest.TestCase):
         # 5. OpenAIRequestMapper builds valid multimodal payload
         payload = OpenAIRequestMapper.map_request(ctx, model="gpt-4o")
         self.assertEqual(payload["messages"][0]["role"], "system")
+        
+        # Tool message has string JSON content
         mapped_tool_msg = payload["messages"][1]
         self.assertEqual(mapped_tool_msg["role"], "tool")
-        image_part = mapped_tool_msg["content"][1]
+        self.assertIsInstance(mapped_tool_msg["content"], str)
+        self.assertEqual(mapped_tool_msg["tool_call_id"], "call_vp_01")
+
+        # Accompanying user message has image_url content part
+        mapped_user_msg = payload["messages"][2]
+        self.assertEqual(mapped_user_msg["role"], "user")
+        self.assertIsInstance(mapped_user_msg["content"], list)
+        image_part = mapped_user_msg["content"][1]
         self.assertEqual(image_part["type"], "image_url")
 
         # 6. Verify Base64 integrity
         encoded_url = image_part["image_url"]["url"]
         b64_str = encoded_url.split("data:image/png;base64,")[1]
         self.assertEqual(base64.b64decode(b64_str), png_data)
+
+        # 7. Verify no raw binary bytes in serialized payload string
+        payload_str = json.dumps(payload)
+        self.assertNotIn(str(png_data), payload_str)
+
+
+class TestRuntimeMultimodalErrorHandling(unittest.TestCase):
+    """Test AgentRuntime behavior when image resolution fails deterministically."""
+
+    def test_runtime_submit_prompt_missing_image_transitions_to_error(self):
+        mock_provider = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter.get_viewport_screenshot.return_value = None
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.adapter = mock_adapter
+        mock_dispatcher.registry.list.return_value = []
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=mock_dispatcher)
+        conv = runtime.conversation
+        conv.add_message(ChatMessage(role=Role.USER, content="Look", image_id="vp_gone"))
+
+        # Submit prompt when image cannot be resolved from cache
+        turn_id = runtime.submit_prompt("Next prompt")
+        self.assertEqual(runtime.current_state, AgentState.ERROR)
+
+        # Verify history recorded the deterministic error
+        err_items = [h for h in runtime.history.items if h.kind == HistoryKind.ERROR]
+        self.assertTrue(len(err_items) > 0)
+        self.assertIn("IMAGE_NOT_FOUND", err_items[-1].title)
 
 
 if __name__ == "__main__":

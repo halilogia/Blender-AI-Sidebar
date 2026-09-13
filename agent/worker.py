@@ -146,7 +146,7 @@ class AgentWorker:
                             )
                             err_type = (
                                 type_str
-                                if type_str.startswith("PROVIDER_")
+                                if type_str.startswith("PROVIDER_") or type_str in ("IMAGE_NOT_FOUND", "CANCELLED")
                                 else f"PROVIDER_{type_str}"
                             )
                             self.event_queue.put(

@@ -26,7 +26,7 @@ from core.events import (
 )
 from core.event_queue import ThreadSafeEventQueue
 from core.types import ToolResult
-from agent.context_builder import ContextBuilder
+from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
 from agent.verifier import ChangeVerifier, build_change_set_from_result
@@ -232,11 +232,34 @@ class AgentRuntime:
         context = None
         if hasattr(self.provider, "stream_chat"):
             tools = self.dispatcher.registry.list()
-            context = ContextBuilder.build(
-                conversation=self.conversation,
-                tools=tools,
-                image_resolver=self._resolve_image_bytes,
-            )
+            try:
+                context = ContextBuilder.build(
+                    conversation=self.conversation,
+                    tools=tools,
+                    image_resolver=self._resolve_image_bytes,
+                )
+            except ImageResolutionError as exc:
+                self.state_machine.transition_to(AgentState.ERROR)
+                if self._current_metrics:
+                    self._current_metrics.t_completed = time.time()
+                self.history.add(
+                    item_id=f"{turn_id}_error",
+                    turn_id=turn_id,
+                    kind=HistoryKind.ERROR,
+                    title="Error: IMAGE_NOT_FOUND",
+                    status="ERROR",
+                    summary=str(exc),
+                    detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                )
+                self.event_queue.put(
+                    AgentErrorEvent(
+                        error_type="IMAGE_NOT_FOUND",
+                        message=str(exc),
+                        turn_id=turn_id,
+                        details={"image_id": exc.image_id},
+                    )
+                )
+                return turn_id
 
         self.worker.submit_task(
             turn_id=turn_id,
@@ -569,11 +592,41 @@ class AgentRuntime:
             context = None
             if hasattr(self.provider, "stream_chat"):
                 tools = self.dispatcher.registry.list()
-                context = ContextBuilder.build(
-                    conversation=self.conversation,
-                    tools=tools,
-                    image_resolver=self._resolve_image_bytes,
-                )
+                try:
+                    context = ContextBuilder.build(
+                        conversation=self.conversation,
+                        tools=tools,
+                        image_resolver=self._resolve_image_bytes,
+                    )
+                except ImageResolutionError as exc:
+                    self.state_machine.transition_to(AgentState.ERROR)
+                    if self._current_metrics:
+                        self._current_metrics.t_completed = time.time()
+                    self.history.add(
+                        item_id=f"{event.turn_id}_error",
+                        turn_id=event.turn_id,
+                        kind=HistoryKind.ERROR,
+                        title="Error: IMAGE_NOT_FOUND",
+                        status="ERROR",
+                        summary=str(exc),
+                        detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                    )
+                    error_result = AgentResult(
+                        final_text=f"Error (IMAGE_NOT_FOUND): {exc}",
+                        tool_results=list(self._current_tool_results),
+                        state=AgentState.ERROR.value,
+                    )
+                    self._last_result = error_result
+                    self.event_queue.put(
+                        AgentErrorEvent(
+                            error_type="IMAGE_NOT_FOUND",
+                            message=str(exc),
+                            turn_id=event.turn_id,
+                            details={"image_id": exc.image_id},
+                        )
+                    )
+                    self._current_turn_id = None
+                    return error_result
 
             self.worker.submit_task(
                 turn_id=event.turn_id,
@@ -745,10 +798,41 @@ class AgentRuntime:
         context = None
         if hasattr(self.provider, "stream_chat"):
             tools = self.dispatcher.registry.list()
-            context = ContextBuilder.build(
-                conversation=self.conversation,
-                tools=tools,
-            )
+            try:
+                context = ContextBuilder.build(
+                    conversation=self.conversation,
+                    tools=tools,
+                    image_resolver=self._resolve_image_bytes,
+                )
+            except ImageResolutionError as exc:
+                self.state_machine.transition_to(AgentState.ERROR)
+                if self._current_metrics:
+                    self._current_metrics.t_completed = time.time()
+                self.history.add(
+                    item_id=f"{pending.turn_id}_error",
+                    turn_id=pending.turn_id,
+                    kind=HistoryKind.ERROR,
+                    title="Error: IMAGE_NOT_FOUND",
+                    status="ERROR",
+                    summary=str(exc),
+                    detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                )
+                err_res = AgentResult(
+                    final_text=f"Error (IMAGE_NOT_FOUND): {exc}",
+                    tool_results=list(self._current_tool_results),
+                    state=AgentState.ERROR.value,
+                )
+                self._last_result = err_res
+                self.event_queue.put(
+                    AgentErrorEvent(
+                        error_type="IMAGE_NOT_FOUND",
+                        message=str(exc),
+                        turn_id=pending.turn_id,
+                        details={"image_id": exc.image_id},
+                    )
+                )
+                self._current_turn_id = None
+                return err_res
 
         self.worker.submit_task(
             turn_id=pending.turn_id,
@@ -844,10 +928,41 @@ class AgentRuntime:
         context = None
         if hasattr(self.provider, "stream_chat"):
             tools = self.dispatcher.registry.list()
-            context = ContextBuilder.build(
-                conversation=self.conversation,
-                tools=tools,
-            )
+            try:
+                context = ContextBuilder.build(
+                    conversation=self.conversation,
+                    tools=tools,
+                    image_resolver=self._resolve_image_bytes,
+                )
+            except ImageResolutionError as exc:
+                self.state_machine.transition_to(AgentState.ERROR)
+                if self._current_metrics:
+                    self._current_metrics.t_completed = time.time()
+                self.history.add(
+                    item_id=f"{pending.turn_id}_error",
+                    turn_id=pending.turn_id,
+                    kind=HistoryKind.ERROR,
+                    title="Error: IMAGE_NOT_FOUND",
+                    status="ERROR",
+                    summary=str(exc),
+                    detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                )
+                err_res = AgentResult(
+                    final_text=f"Error (IMAGE_NOT_FOUND): {exc}",
+                    tool_results=list(self._current_tool_results),
+                    state=AgentState.ERROR.value,
+                )
+                self._last_result = err_res
+                self.event_queue.put(
+                    AgentErrorEvent(
+                        error_type="IMAGE_NOT_FOUND",
+                        message=str(exc),
+                        turn_id=pending.turn_id,
+                        details={"image_id": exc.image_id},
+                    )
+                )
+                self._current_turn_id = None
+                return err_res
 
         self.worker.submit_task(
             turn_id=pending.turn_id,

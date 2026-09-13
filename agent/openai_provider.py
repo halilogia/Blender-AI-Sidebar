@@ -15,7 +15,7 @@ import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
 
 from core.config import Config, is_network_allowed
-from agent.context_builder import ProviderRequestContext
+from agent.context_builder import ContextBuilder, ImageResolutionError, ProviderRequestContext
 from agent.http_client import (
     HttpClient,
     HttpConnectionError,
@@ -47,6 +47,17 @@ class OpenAIRequestMapper:
     """Converts internal ProviderRequestContext into OpenAI Chat Completions JSON dictionary."""
 
     @classmethod
+    def create_image_content_part(cls, png_bytes: bytes) -> Dict[str, Any]:
+        """Format raw PNG bytes as an OpenAI image_url content part in-memory."""
+        b64_str = base64.b64encode(png_bytes).decode("ascii")
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{b64_str}",
+            },
+        }
+
+    @classmethod
     def map_request(
         cls,
         context: ProviderRequestContext,
@@ -69,6 +80,7 @@ class OpenAIRequestMapper:
 
         Raises:
             MultimodalUnsupportedError: If images are present but provider does not support multimodal.
+            ImageResolutionError: If an image referenced by a message is missing from context.images.
         """
         has_images = bool(getattr(context, "images", None))
         if has_images and not supports_multimodal:
@@ -81,6 +93,39 @@ class OpenAIRequestMapper:
 
         for msg in context.messages:
             mapped_messages.append(cls.map_message(msg, images=images_dict))
+
+            # Strictly adhere to the OpenAI Chat Completions API specification:
+            # In official OpenAI API, role="tool" content must be a string, and image_url
+            # parts are only valid in role="user".
+            # When a tool (e.g. capture_viewport) returns an image_id, we attach an accompanying
+            # user message carrying the image_url content part directly after the tool result.
+            if msg.role == Role.TOOL:
+                img_id = getattr(msg, "image_id", None)
+                if not img_id and getattr(msg, "name", None) == "capture_viewport" and msg.content:
+                    try:
+                        content_dict = json.loads(msg.content)
+                        if isinstance(content_dict, dict):
+                            img_id = content_dict.get("image_id")
+                    except Exception:
+                        pass
+
+                if img_id:
+                    if img_id not in images_dict:
+                        raise ImageResolutionError(
+                            image_id=img_id,
+                            message=f"Image '{img_id}' referenced in tool message not found in ProviderRequestContext.images.",
+                        )
+                    png_bytes = images_dict[img_id]
+                    mapped_messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Captured viewport screenshot [{img_id}]:",
+                            },
+                            cls.create_image_content_part(png_bytes),
+                        ],
+                    })
 
         body: Dict[str, Any] = {
             "model": model,
@@ -106,24 +151,14 @@ class OpenAIRequestMapper:
     ) -> Dict[str, Any]:
         """Convert an internal ChatMessage into an OpenAI Chat Completion message dict.
 
-        If the message contains an image_id resolved in images, formats content as a
-        multimodal content parts array with text and image_url (data:image/png;base64,...).
-        Otherwise preserves text-only string content.
+        Enforces strict standard OpenAI message schemas:
+        - SYSTEM: {"role": "system", "content": "..."}
+        - USER: {"role": "user", "content": "..."} OR [{"type": "text", ...}, {"type": "image_url", ...}]
+        - ASSISTANT: {"role": "assistant", "content": ..., "tool_calls": [...]}
+        - TOOL: {"role": "tool", "tool_call_id": "...", "content": "..."} (ALWAYS string)
         """
         role = message.role
         images_dict = images or {}
-
-        # Resolve image_id from message field or tool result content
-        img_id = getattr(message, "image_id", None)
-        if not img_id and role == Role.TOOL and getattr(message, "name", None) == "capture_viewport" and message.content:
-            try:
-                content_dict = json.loads(message.content)
-                if isinstance(content_dict, dict):
-                    img_id = content_dict.get("image_id")
-            except Exception:
-                pass
-
-        has_image = bool(img_id and img_id in images_dict)
 
         if role == Role.SYSTEM:
             return {
@@ -132,17 +167,18 @@ class OpenAIRequestMapper:
             }
 
         elif role == Role.USER:
-            if has_image:
+            img_id = getattr(message, "image_id", None)
+            if img_id:
+                if img_id not in images_dict:
+                    raise ImageResolutionError(
+                        image_id=img_id,
+                        message=f"Image '{img_id}' referenced in USER message not found in ProviderRequestContext.images.",
+                    )
                 png_bytes = images_dict[img_id]
-                b64_str = base64.b64encode(png_bytes).decode("ascii")
-                data_uri = f"data:image/png;base64,{b64_str}"
                 parts: List[Dict[str, Any]] = []
                 if message.content:
                     parts.append({"type": "text", "text": message.content})
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": data_uri},
-                })
+                parts.append(cls.create_image_content_part(png_bytes))
                 return {
                     "role": "user",
                     "content": parts,
@@ -177,26 +213,7 @@ class OpenAIRequestMapper:
             return d
 
         elif role == Role.TOOL:
-            if has_image:
-                png_bytes = images_dict[img_id]
-                b64_str = base64.b64encode(png_bytes).decode("ascii")
-                data_uri = f"data:image/png;base64,{b64_str}"
-                parts = [
-                    {"type": "text", "text": message.content or ""},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_uri},
-                    },
-                ]
-                d = {
-                    "role": "tool",
-                    "tool_call_id": message.tool_call_id,
-                    "content": parts,
-                }
-                if message.name:
-                    d["name"] = message.name
-                return d
-
+            # Strictly string content per OpenAI Chat Completions API specification
             d = {
                 "role": "tool",
                 "tool_call_id": message.tool_call_id,
@@ -321,6 +338,14 @@ class OpenAICompatibleProvider:
                 type=ProviderErrorType.PROVIDER_UNSUPPORTED,
                 message=str(exc),
                 details={"model": self.config.model},
+            )
+            return
+        except ImageResolutionError as exc:
+            yield ProviderError(
+                turn_id=turn_id,
+                type=ProviderErrorType.IMAGE_NOT_FOUND,
+                message=str(exc),
+                details={"image_id": exc.image_id},
             )
             return
 

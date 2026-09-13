@@ -27,6 +27,17 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class ImageResolutionError(ValueError):
+    """Raised when an image_id referenced in a message cannot be resolved to in-memory bytes."""
+
+    def __init__(self, image_id: str, message: Optional[str] = None):
+        self.image_id = image_id
+        super().__init__(
+            message
+            or f"Failed to resolve image bytes for image_id '{image_id}'. Image not found or cache expired."
+        )
+
+
 @dataclass(frozen=True)
 class ProviderRequestContext:
     """Normalized internal container for a provider request ready for dispatch.
@@ -151,24 +162,37 @@ class ContextBuilder:
 
         # 6. Resolve in-memory image attachments
         resolved_images: Dict[str, bytes] = dict(images) if images else {}
-        if image_resolver:
-            for m in final_messages:
-                img_id = getattr(m, "image_id", None)
-                if not img_id and m.role == Role.TOOL and m.name == "capture_viewport" and m.content:
-                    try:
-                        content_dict = json.loads(m.content)
-                        if isinstance(content_dict, dict):
-                            img_id = content_dict.get("image_id")
-                    except Exception:
-                        pass
+        for m in final_messages:
+            img_id = getattr(m, "image_id", None)
+            if not img_id and m.role == Role.TOOL and getattr(m, "name", None) == "capture_viewport" and m.content:
+                try:
+                    content_dict = json.loads(m.content)
+                    if isinstance(content_dict, dict):
+                        img_id = content_dict.get("image_id")
+                except Exception:
+                    pass
 
-                if img_id and img_id not in resolved_images:
+            if img_id:
+                if img_id not in resolved_images:
+                    if image_resolver is None:
+                        raise ImageResolutionError(
+                            image_id=img_id,
+                            message=f"Image '{img_id}' referenced in conversation but no image_resolver was provided.",
+                        )
                     try:
                         img_bytes = image_resolver(img_id)
-                        if img_bytes:
-                            resolved_images[img_id] = img_bytes
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        raise ImageResolutionError(
+                            image_id=img_id,
+                            message=f"Failed to resolve image '{img_id}' via image_resolver: {exc}",
+                        ) from exc
+
+                    if not img_bytes:
+                        raise ImageResolutionError(
+                            image_id=img_id,
+                            message=f"Image '{img_id}' could not be resolved from in-memory cache (image not found or cache expired).",
+                        )
+                    resolved_images[img_id] = img_bytes
 
         return ProviderRequestContext(
             messages=final_messages,
@@ -262,6 +286,7 @@ class ContextBuilder:
                         content=marker,
                         tool_call_id=m.tool_call_id,
                         name=m.name,
+                        image_id=getattr(m, "image_id", None),
                     )
                 )
             else:

@@ -26,8 +26,9 @@ if PROJECT_ROOT not in sys.path:
 import bpy
 
 from adapter.blender_adapter import BlenderAdapter, ThreadSafetyViolationError
-from agent.context_builder import ContextBuilder, ProviderRequestContext
+from agent.context_builder import ContextBuilder, ImageResolutionError, ProviderRequestContext
 from agent.dispatcher import ToolDispatcher
+from agent.history import HistoryKind
 from agent.models import (
     ChatMessage,
     Conversation,
@@ -42,6 +43,7 @@ from agent.openai_provider import (
     OpenAIRequestMapper,
 )
 from agent.runtime import AgentRuntime
+from agent.state_machine import AgentState
 from core.config import Config
 from tools.read_only.capture_viewport import CaptureViewportTool
 from tools.registry import ToolRegistry
@@ -186,6 +188,92 @@ class TestMultimodalIntegration(unittest.TestCase):
         user_msg = runtime.conversation.messages[0]
         self.assertEqual(user_msg.role, Role.USER)
         self.assertEqual(user_msg.image_id, image_id)
+
+    def test_06_capture_viewport_tool_result_to_next_provider_request_mapping(self):
+        """Tool result from capture_viewport maps to tool string + accompanying user image message."""
+        # 1. Dispatch capture_viewport tool
+        tool_call = ToolCall(call_id="call_vp_real", tool_name="capture_viewport", arguments={"width": 128, "height": 128})
+        tool_res = self.dispatcher.dispatch(tool_call)
+        self.assertTrue(tool_res.success)
+        image_id = tool_res.data["image_id"]
+
+        # 2. Build conversation with tool execution turn
+        conv = Conversation()
+        conv.add_message(ChatMessage(role=Role.USER, content="Take a viewport screenshot"))
+        conv.add_message(ChatMessage(role=Role.ASSISTANT, tool_calls=[tool_call]))
+        conv.add_message(
+            ChatMessage(
+                role=Role.TOOL,
+                content=json.dumps(tool_res.data),
+                tool_call_id=tool_call.call_id,
+                name="capture_viewport",
+                image_id=image_id,
+            )
+        )
+
+        # 3. Assemble context
+        ctx = ContextBuilder.build(
+            conversation=conv,
+            tools=self.registry.list(),
+            image_resolver=self.adapter.get_viewport_screenshot,
+        )
+        self.assertIn(image_id, ctx.images)
+        png_bytes = ctx.images[image_id]
+
+        # 4. Map to OpenAI payload
+        payload = OpenAIRequestMapper.map_request(ctx, model="gpt-4o")
+        msgs = payload["messages"]
+
+        # Expected sequence:
+        # [0] system
+        # [1] user ("Take a viewport screenshot")
+        # [2] assistant (tool_calls)
+        # [3] tool (string content)
+        # [4] user (accompanying image_url content-part)
+        self.assertEqual(msgs[0]["role"], "system")
+        self.assertEqual(msgs[1]["role"], "user")
+        self.assertEqual(msgs[2]["role"], "assistant")
+
+        tool_msg = msgs[3]
+        self.assertEqual(tool_msg["role"], "tool")
+        self.assertIsInstance(tool_msg["content"], str)
+        self.assertEqual(tool_msg["tool_call_id"], "call_vp_real")
+
+        user_img_msg = msgs[4]
+        self.assertEqual(user_img_msg["role"], "user")
+        self.assertIsInstance(user_img_msg["content"], list)
+        self.assertEqual(user_img_msg["content"][0]["type"], "text")
+        self.assertEqual(user_img_msg["content"][1]["type"], "image_url")
+
+        # 5. Base64 integrity check
+        data_url = user_img_msg["content"][1]["image_url"]["url"]
+        b64_str = data_url.split("data:image/png;base64,")[1]
+        self.assertEqual(base64.b64decode(b64_str), png_bytes)
+
+        # 6. Hygiene check: zero raw binary bytes in serialized payload string
+        payload_str = json.dumps(payload)
+        self.assertNotIn(str(png_bytes), payload_str)
+
+    def test_07_missing_image_cache_deterministic_failure(self):
+        """Missing or expired image in cache produces deterministic ImageResolutionError and AgentState.ERROR."""
+        conv = Conversation([
+            ChatMessage(role=Role.USER, content="Explain this", image_id="vp_expired_or_invalid")
+        ])
+
+        # ContextBuilder raises ImageResolutionError
+        with self.assertRaises(ImageResolutionError) as cm:
+            ContextBuilder.build(conv, image_resolver=self.adapter.get_viewport_screenshot)
+        self.assertEqual(cm.exception.image_id, "vp_expired_or_invalid")
+
+        # Runtime transitions to ERROR and records in history
+        mock_provider = MagicMock()
+        runtime = AgentRuntime(provider=mock_provider, dispatcher=self.dispatcher)
+        turn_id = runtime.submit_prompt("Look at scene", image_id="vp_expired_or_invalid")
+        self.assertEqual(runtime.current_state, AgentState.ERROR)
+
+        err_items = [h for h in runtime.history.items if h.kind == HistoryKind.ERROR]
+        self.assertTrue(len(err_items) > 0)
+        self.assertIn("IMAGE_NOT_FOUND", err_items[-1].title)
 
 
 def run():
