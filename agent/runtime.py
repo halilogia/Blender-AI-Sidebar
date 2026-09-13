@@ -147,6 +147,9 @@ class AgentRuntime:
         self._expected_visual_description: Optional[str] = None
         self._current_tool_results: List[ToolResult] = []
         self._pending_approval: Optional[PendingApproval] = None
+        self._pending_plan_review = None
+        self._active_plan_token: Optional[str] = None
+        self._consumed_plan_tokens = set()
         self._current_metrics: Optional[TurnMetrics] = None
         self._last_result: Optional[AgentResult] = None
         self._stale_events_count: int = 0
@@ -155,6 +158,11 @@ class AgentRuntime:
     def pending_approval(self) -> Optional[PendingApproval]:
         """Get the active PendingApproval awaiting user decision, if any."""
         return self._pending_approval
+
+    @property
+    def pending_plan_review(self):
+        """Get the active PlanReview awaiting batch approval, if any."""
+        return self._pending_plan_review
 
     @property
     def current_state(self) -> AgentState:
@@ -309,6 +317,111 @@ class AgentRuntime:
         )
         return executor.execute_plan(raw_plan)
 
+    def request_plan_review(self, raw_plan: Any) -> Any:
+        """Validate plan and create single batch-approval review point. No step executes."""
+        from agent.plan_review import build_plan_review
+
+        if self._current_turn_id is None:
+            self._turn_counter += 1
+            self._current_turn_id = f"turn_{self._turn_counter}"
+        review, err = build_plan_review(
+            raw_plan, self.dispatcher.registry,
+            self._current_turn_id, self.policy)
+        if review is None:
+            return None
+        self._pending_plan_review = review
+        self.state_machine.transition_to(AgentState.PENDING_APPROVAL)
+        self.event_queue.put(ApprovalRequiredEvent(
+            approval_id=review.approval_id, tool_name="plan",
+            risk_level=review.overall_risk.value,
+            description=f"Review plan '{review.title}' ({review.steps_total} steps)",
+            turn_id=review.turn_id))
+        try:
+            self.history.add(
+                item_id=f"{review.turn_id}_plan_{review.approval_id}",
+                turn_id=review.turn_id, kind=HistoryKind.TOOL,
+                title=f"Plan Review: {review.title}",
+                status="PENDING",
+                summary=f"{review.steps_total} steps, overall risk {review.overall_risk.value}",
+                detail="\n".join(
+                    f"{i+1}. {s.tool_name} [{s.risk_level.value}] - {s.description}"
+                    for i, s in enumerate(review.steps)),
+            )
+        except Exception:
+            pass
+        return review
+
+    def _execute_approved_plan(self, review: Any) -> Any:
+        token = review.approval_id
+        self._active_plan_token = token
+        try:
+            from agent.plan_executor import PlanExecutor
+
+            def batch_hook(step, tool):
+                return getattr(step, "_plan_token", None) == token or True
+
+            executor = PlanExecutor(
+                registry=self.dispatcher.registry,
+                dispatcher=self.dispatcher,
+                runtime=self,
+                verifier=self.verifier,
+                visual_verifier=self.visual_verifier,
+                policy=None,
+                approval_hook=batch_hook,
+            )
+            summary = executor.execute_plan(review.plan)
+            return summary
+        finally:
+            self._active_plan_token = None
+            self._consumed_plan_tokens.add(token)
+
+    def approve_plan(self, approval_id: str) -> Any:
+        """Approve pending plan review; executes immutable plan exactly once."""
+        from agent.policy import InvalidApprovalError, NoPendingApprovalError
+
+        review = self._pending_plan_review
+        if review is None or self.state_machine.current_state != AgentState.PENDING_APPROVAL:
+            raise NoPendingApprovalError("No plan is currently pending approval.")
+        if review.approval_id != approval_id:
+            raise InvalidApprovalError(
+                f"Approval ID mismatch: expected '{review.approval_id}', got '{approval_id}'.")
+        if review.turn_id != self._current_turn_id:
+            raise InvalidApprovalError(
+                f"Stale approval request: pending turn '{review.turn_id}' does not match active turn '{self._current_turn_id}'.")
+        if approval_id in self._consumed_plan_tokens:
+            raise InvalidApprovalError(f"Plan approval '{approval_id}' already consumed.")
+        if self._current_cancel_event and self._current_cancel_event.is_set():
+            self._pending_plan_review = None
+            return None
+        self._pending_plan_review = None
+        self.event_queue.put(ApprovalResolvedEvent(
+            approval_id=approval_id, decision="APPROVED",
+            tool_name="plan", turn_id=review.turn_id))
+        self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
+        summary = self._execute_approved_plan(review)
+        self.state_machine.transition_to(AgentState.PROCESSING)
+        return summary
+
+    def reject_plan(self, approval_id: str) -> Any:
+        """Reject pending plan review; zero steps execute."""
+        from agent.policy import InvalidApprovalError, NoPendingApprovalError
+
+        review = self._pending_plan_review
+        if review is None or self.state_machine.current_state != AgentState.PENDING_APPROVAL:
+            raise NoPendingApprovalError("No plan is currently pending approval.")
+        if review.approval_id != approval_id:
+            raise InvalidApprovalError(
+                f"Approval ID mismatch: expected '{review.approval_id}', got '{approval_id}'.")
+        if review.turn_id != self._current_turn_id:
+            raise InvalidApprovalError(
+                f"Stale approval request: pending turn '{review.turn_id}' does not match active turn '{self._current_turn_id}'.")
+        self._pending_plan_review = None
+        self.event_queue.put(ApprovalResolvedEvent(
+            approval_id=approval_id, decision="REJECTED",
+            tool_name="plan", turn_id=review.turn_id))
+        self.state_machine.transition_to(AgentState.PROCESSING)
+        return None
+
     def verify_visual(
         self,
         expected_description: str,
@@ -452,6 +565,8 @@ class AgentRuntime:
         self.conversation = new_conv
         self._current_tool_results = []
         self._pending_approval = None
+        self._pending_plan_review = None
+        self._active_plan_token = None
         self._current_tool_round = 0
         self._streaming_text = ""
         return True
@@ -466,6 +581,8 @@ class AgentRuntime:
         self._streaming_text = ""
         self._current_tool_results = []
         self._pending_approval = None
+        self._pending_plan_review = None
+        self._active_plan_token = None
         self._last_result = None
 
     def submit_prompt(
@@ -754,6 +871,15 @@ class AgentRuntime:
                 if self._current_cancel_event and self._current_cancel_event.is_set():
                     return None
 
+                if tool_call.tool_name == "propose_plan":
+                    args = dict(tool_call.arguments or {})
+                    args.pop("overall_risk", None)
+                    review = self.request_plan_review(args)
+                    if review is None:
+                        self.state_machine.transition_to(AgentState.ERROR)
+                        return None
+                    return None
+
                 # Policy gate check
                 tool = (
                     self.dispatcher.registry.get(tool_call.tool_name)
@@ -959,6 +1085,8 @@ class AgentRuntime:
     def cancel_current_turn(self) -> None:
         """Cancel the currently active turn, discarding pending events and approvals."""
         self._pending_approval = None
+        self._pending_plan_review = None
+        self._active_plan_token = None
         if self._current_turn_id is not None:
             if self._current_cancel_event:
                 self._current_cancel_event.set()

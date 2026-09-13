@@ -112,21 +112,38 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                             overlay_state.last_response_text = runtime.last_result.final_text
                             state_changed = True
 
-                    # Sync pending approval
-                    pending = getattr(runtime, "pending_approval", None)
-                    if pending:
-                        appr_dict = {
-                            "approval_id": pending.approval_id,
-                            "description": pending.human_readable_description,
-                            "risk_level": pending.risk_level.value if hasattr(pending.risk_level, "value") else str(pending.risk_level),
-                            "tool_name": pending.tool_name,
-                        }
+                    # Sync pending approval (plan review takes precedence as batch card)
+                    plan_review = getattr(runtime, "pending_plan_review", None)
+                    if plan_review is not None:
+                        try:
+                            appr_dict = plan_review.hud_summary()
+                        except Exception:
+                            appr_dict = {
+                                "kind": "plan",
+                                "approval_id": plan_review.approval_id,
+                                "title": plan_review.title,
+                                "description": plan_review.description,
+                                "steps_total": plan_review.steps_total,
+                                "overall_risk": plan_review.overall_risk.value,
+                            }
                         if overlay_state.pending_approval != appr_dict:
                             overlay_state.pending_approval = appr_dict
                             state_changed = True
-                    elif overlay_state.pending_approval is not None:
-                        overlay_state.pending_approval = None
-                        state_changed = True
+                    else:
+                        pending = getattr(runtime, "pending_approval", None)
+                        if pending:
+                            appr_dict = {
+                                "approval_id": pending.approval_id,
+                                "description": pending.human_readable_description,
+                                "risk_level": pending.risk_level.value if hasattr(pending.risk_level, "value") else str(pending.risk_level),
+                                "tool_name": pending.tool_name,
+                            }
+                            if overlay_state.pending_approval != appr_dict:
+                                overlay_state.pending_approval = appr_dict
+                                state_changed = True
+                        elif overlay_state.pending_approval is not None:
+                            overlay_state.pending_approval = None
+                            state_changed = True
             except Exception:
                 pass
 
@@ -316,7 +333,13 @@ class AISIDEBAR_OT_viewport_hud(Operator):
             from ... import get_runtime
             runtime = get_runtime()
             if runtime:
-                runtime.approve(approval_id)
+                if approval_id.startswith("plan_") and hasattr(runtime, "approve_plan"):
+                    try:
+                        runtime.approve_plan(approval_id)
+                    except Exception:
+                        runtime.approve(approval_id)
+                else:
+                    runtime.approve(approval_id)
                 overlay_state.pending_approval = None
         except Exception:
             pass
@@ -327,7 +350,13 @@ class AISIDEBAR_OT_viewport_hud(Operator):
             from ... import get_runtime
             runtime = get_runtime()
             if runtime:
-                runtime.reject(approval_id)
+                if approval_id.startswith("plan_") and hasattr(runtime, "reject_plan"):
+                    try:
+                        runtime.reject_plan(approval_id)
+                    except Exception:
+                        runtime.reject(approval_id)
+                else:
+                    runtime.reject(approval_id)
                 overlay_state.pending_approval = None
         except Exception:
             pass

@@ -104,18 +104,33 @@ class AISIDEBAR_OT_approve_action(Operator):
     def poll(cls, context):
         from .. import get_runtime
         runtime = get_runtime()
-        return runtime is not None and runtime.pending_approval is not None
+        if runtime is None:
+            return False
+        return runtime.pending_approval is not None or getattr(runtime, "pending_plan_review", None) is not None
 
     def execute(self, context):
         from .. import get_runtime
         runtime = get_runtime()
-        if not runtime or not runtime.pending_approval:
+        if not runtime:
             self.report({"WARNING"}, "No action is currently pending approval.")
             return {"CANCELLED"}
-
-        target_id = self.approval_id or runtime.pending_approval.approval_id
+        target_id = self.approval_id
+        if not target_id:
+            if getattr(runtime, "pending_plan_review", None) is not None:
+                target_id = runtime.pending_plan_review.approval_id
+            elif runtime.pending_approval is not None:
+                target_id = runtime.pending_approval.approval_id
+        if not target_id:
+            self.report({"WARNING"}, "No action is currently pending approval.")
+            return {"CANCELLED"}
         try:
-            runtime.approve(target_id)
+            if target_id.startswith("plan_") and hasattr(runtime, "approve_plan"):
+                try:
+                    runtime.approve_plan(target_id)
+                except Exception:
+                    runtime.approve(target_id)
+            else:
+                runtime.approve(target_id)
             return {"FINISHED"}
         except Exception as exc:
             self.report({"ERROR"}, f"Approval failed: {str(exc)}")
@@ -135,18 +150,34 @@ class AISIDEBAR_OT_reject_action(Operator):
     def poll(cls, context):
         from .. import get_runtime
         runtime = get_runtime()
-        return runtime is not None and runtime.pending_approval is not None
+        if runtime is None:
+            return False
+        return runtime.pending_approval is not None or getattr(runtime, "pending_plan_review", None) is not None
 
     def execute(self, context):
         from .. import get_runtime
         runtime = get_runtime()
-        if not runtime or not runtime.pending_approval:
+        if not runtime:
             self.report({"WARNING"}, "No action is currently pending approval.")
             return {"CANCELLED"}
 
-        target_id = self.approval_id or runtime.pending_approval.approval_id
+        target_id = self.approval_id
+        if not target_id:
+            if getattr(runtime, "pending_plan_review", None) is not None:
+                target_id = runtime.pending_plan_review.approval_id
+            elif runtime.pending_approval is not None:
+                target_id = runtime.pending_approval.approval_id
+        if not target_id:
+            self.report({"WARNING"}, "No action is currently pending approval.")
+            return {"CANCELLED"}
         try:
-            runtime.reject(target_id)
+            if target_id.startswith("plan_") and hasattr(runtime, "reject_plan"):
+                try:
+                    runtime.reject_plan(target_id)
+                except Exception:
+                    runtime.reject(target_id)
+            else:
+                runtime.reject(target_id)
             return {"FINISHED"}
         except Exception as exc:
             self.report({"ERROR"}, f"Rejection failed: {str(exc)}")
