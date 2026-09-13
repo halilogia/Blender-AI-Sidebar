@@ -20,6 +20,7 @@ from adapter.readers.mesh_reader import (
     MeshReader,
     InvalidMeshDataTypeError,
 )
+from adapter.readers.viewport_reader import ViewportReader
 from adapter.mutators import (
     PrimitiveMutator,
     InvalidPrimitiveTypeError,
@@ -51,6 +52,7 @@ class BlenderAdapter:
         self._object_reader = ObjectReader()
         self._material_reader = MaterialReader()
         self._mesh_reader = MeshReader()
+        self._viewport_reader = ViewportReader()
 
     def inspect_scene(self) -> ToolResult:
         """Inspect the active scene summary.
@@ -455,4 +457,50 @@ class BlenderAdapter:
                 message=f"Unexpected error assigning material: {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
+
+    def capture_viewport(
+        self,
+        width: int = 512,
+        height: int = 512,
+    ) -> ToolResult:
+        """Capture active 3D Viewport screenshot.
+
+        Args:
+            width: Desired image width in pixels (default 512).
+            height: Desired image height in pixels (default 512).
+
+        Returns:
+            ToolResult containing image metadata and in-memory reference.
+        """
+        assert_main_thread()
+        tool_name = "capture_viewport"
+        try:
+            data = self._viewport_reader.capture(width=width, height=height)
+            return ToolResult.ok(tool_name, data)
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"width": width, "height": height},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="VIEWPORT_UNAVAILABLE",
+                message=f"Failed to capture viewport: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def get_viewport_screenshot(self, image_id: str) -> Optional[bytes]:
+        """Retrieve raw PNG bytes for a captured viewport screenshot.
+
+        Args:
+            image_id: Unique identifier returned by capture_viewport.
+
+        Returns:
+            Raw PNG bytes if cached, else None.
+        """
+        assert_main_thread()
+        return self._viewport_reader.get_image_bytes(image_id)
 
