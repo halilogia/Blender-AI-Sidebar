@@ -33,7 +33,9 @@ from agent.models import ProviderResponse, ToolCall
 from agent.policy import ApprovalPolicy
 from agent.runtime import AgentRuntime
 from agent.state_machine import AgentState
-from agent.verifier import ChangeVerifier
+from adapter.readers.material_reader import MaterialReader
+from agent.verifier import ChangeVerifier, build_change_set_from_result
+from core.change_set import VerificationStatus
 from core.events import ProviderResponseReadyEvent
 from core.event_queue import ThreadSafeEventQueue
 from core.types import RiskLevel, ToolResult
@@ -41,24 +43,6 @@ from tools.mutations.create_primitive import CreatePrimitiveTool
 from tools.mutations.set_material import SetMaterialTool
 from tools.mutations.assign_material import AssignMaterialTool
 from tools.registry import ToolRegistry
-
-
-class DivergentMaterialAdapter(BlenderAdapter):
-    """Adapter that simulates intentional shader divergence to test verification failure handling."""
-
-    def set_material(self, **kwargs):
-        res = super().set_material(**kwargs)
-        if not res.success:
-            return res
-        # Intentionally tamper actual snapshot to simulate undetected scene divergence
-        mismatched_data = dict(res.data)
-        actual = dict(res.data.get("actual", {}))
-        bsdf = dict(actual.get("principled_bsdf", {}))
-        # Modify roughness to a diverged value that exceeds epsilon
-        bsdf["roughness"] = 0.999
-        actual["principled_bsdf"] = bsdf
-        mismatched_data["actual"] = actual
-        return ToolResult.ok(res.tool, mismatched_data)
 
 
 class TestMaterialIntegrationSuite(unittest.TestCase):
@@ -201,47 +185,67 @@ class TestMaterialIntegrationSuite(unittest.TestCase):
         self.assertEqual(len(verif["mismatches"]), 0)
 
     # -------------------------------------------------------------------------
-    # 4. Real verification FAIL (Intentional divergence detection)
+    # 4. Real verification FAIL (Intentional live divergence detection)
     # -------------------------------------------------------------------------
     def test_04_real_verification_fail(self):
-        """Intentional mismatch between expected and actual state produces VERIFICATION_FAILED."""
+        """Intentional mismatch between expected and actual Blender state produces VERIFICATION_FAILED."""
+        # 1. Gerçek Blender objesine / materialine mutation uygula
         self.adapter.create_primitive("CUBE", name="DivergentCube")
-
-        # Set up runtime with DivergentMaterialAdapter
-        divergent_adapter = DivergentMaterialAdapter()
-        divergent_dispatcher = ToolDispatcher(registry=self.registry, adapter=divergent_adapter)
-        divergent_runtime = AgentRuntime(
-            provider=self.mock_provider,
-            dispatcher=divergent_dispatcher,
-            event_queue=ThreadSafeEventQueue(),
-            worker=self.mock_worker,
-            policy=self.policy,
-            verifier=self.verifier,
-        )
-
-        # Execute set_material expecting roughness=0.1
-        divergent_runtime._current_turn_id = "turn_v_fail"
-        divergent_runtime.state_machine.reset()
-        divergent_runtime.state_machine.transition_to(AgentState.PROCESSING)
-
-        call = ToolCall(
+        tc = ToolCall(
             call_id="call_fail_1",
             tool_name="set_material",
-            arguments={"object_name": "DivergentCube", "roughness": 0.1},
+            arguments={"object_name": "DivergentCube", "roughness": 0.25},
         )
-        resp = ProviderResponse(assistant_text=None, tool_calls=[call], is_final=False)
-        event = ProviderResponseReadyEvent(response=resp, turn_id="turn_v_fail")
-        divergent_runtime.process_event(event)
+        res = self.dispatcher.dispatch(tc)
+        self.assertTrue(res.success)
 
-        last_res = divergent_runtime._current_tool_results[-1]
-        self.assertFalse(last_res.success)
-        self.assertEqual(last_res.error.type, "VERIFICATION_FAILED")
-        self.assertIn("mismatch in [roughness]", last_res.error.message)
-        self.assertIn("verification", last_res.error.details)
-        verif = last_res.error.details["verification"]
-        self.assertEqual(verif["status"], "FAIL")
-        self.assertFalse(verif["passed"])
-        self.assertEqual(verif["mismatches"][0]["property"], "roughness")
+        # 2. Expected state roughness = 0.25
+
+        # 3. Gerçek Blender material'inin roughness değerini mutation sonrasında kasıtlı olarak 0.999 yap
+        cube = bpy.data.objects["DivergentCube"]
+        mat = cube.material_slots[0].material
+        bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+        bsdf.inputs["Roughness"].default_value = 0.999
+        bpy.context.view_layer.update()
+
+        # 4. Verification'ın gerçek Blender snapshot'ını okuyup bu farkı yakaladığını doğrula
+        actual_snap = MaterialReader.read(material_name=mat.name)
+        self.assertAlmostEqual(actual_snap["principled_bsdf"]["roughness"], 0.999, places=3)
+
+        result_with_live_actual = dict(res.data)
+        result_with_live_actual["actual"] = actual_snap
+        result_with_live_actual["after"] = actual_snap
+
+        change_set = build_change_set_from_result(
+            tool_name="set_material",
+            arguments={"object_name": "DivergentCube", "roughness": 0.25},
+            result_data=result_with_live_actual,
+        )
+        self.assertIsNotNone(change_set)
+
+        # 5. Sonuç: status == FAIL, mismatch property == roughness, VERIFICATION_FAILED
+        verif = self.verifier.verify(change_set)
+        self.assertEqual(verif.status, VerificationStatus.FAIL)
+        self.assertFalse(verif.passed)
+        verif_dict = verif.to_dict()
+        self.assertEqual(verif_dict["status"], "FAIL")
+        self.assertFalse(verif_dict["passed"])
+        self.assertEqual(len(verif_dict["mismatches"]), 1)
+        self.assertEqual(verif_dict["mismatches"][0]["property"], "roughness")
+        self.assertAlmostEqual(verif_dict["mismatches"][0]["expected"], 0.25, places=3)
+        self.assertAlmostEqual(verif_dict["mismatches"][0]["actual"], 0.999, places=3)
+        self.assertIn("mismatch in [roughness]", verif.summary)
+
+        # Runtime verification pipeline wrapping check (error_type == VERIFICATION_FAILED)
+        with unittest.mock.patch.object(
+            self.dispatcher, "dispatch", return_value=ToolResult.ok("set_material", result_with_live_actual)
+        ):
+            failed_res = self.runtime._execute_and_verify(tc)
+            self.assertFalse(failed_res.success)
+            self.assertEqual(failed_res.error.type, "VERIFICATION_FAILED")
+            self.assertIn("mismatch in [roughness]", failed_res.error.message)
+            self.assertEqual(failed_res.error.details["verification"]["status"], "FAIL")
+            self.assertEqual(failed_res.error.details["verification"]["mismatches"][0]["property"], "roughness")
 
     # -------------------------------------------------------------------------
     # 5. Partial verification
