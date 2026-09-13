@@ -179,6 +179,23 @@ class OpenAICompatibleProvider:
             online_access if online_access is not None else self.online_access
         )
 
+        # 0. Configuration check
+        if not self.config or not getattr(self.config, "base_url", None) or not self.config.base_url.strip():
+            yield ProviderError(
+                turn_id=turn_id,
+                type=ProviderErrorType.CONFIGURATION_ERROR,
+                message="AI provider is not configured. Please set Base URL in Blender Preferences.",
+            )
+            return
+
+        if not getattr(self.config, "model", None) or not self.config.model.strip():
+            yield ProviderError(
+                turn_id=turn_id,
+                type=ProviderErrorType.CONFIGURATION_ERROR,
+                message="AI model is not configured. Please set Model in Blender Preferences.",
+            )
+            return
+
         # 1. Network policy check
         allowed, reason = is_network_allowed(self.config.base_url, effective_online_access)
         if not allowed:
@@ -247,7 +264,8 @@ class OpenAICompatibleProvider:
             yield ProviderError(
                 turn_id=turn_id,
                 type=ProviderErrorType.NETWORK_ERROR,
-                message=err.message,
+                message=f"Cannot connect to AI provider at {self.config.base_url}. Ensure the server (e.g. 9Router, Ollama) is running.",
+                details={"error": err.message},
             )
             return
         except Exception as err:

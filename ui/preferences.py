@@ -79,6 +79,11 @@ def _on_preference_updated(self, context):
         timeout_seconds=float(self.timeout_seconds),
     )
     save_config(cfg, get_config_path())
+    try:
+        from .. import update_runtime_config
+        update_runtime_config(cfg)
+    except Exception:
+        pass
 
 
 class AI_SIDEBAR_OT_save_preferences(Operator):

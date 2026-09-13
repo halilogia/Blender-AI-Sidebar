@@ -20,6 +20,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+os.environ["BLENDER_AI_USE_MOCK_PROVIDER"] = "1"
+
 import bpy
 
 init_path = os.path.join(PROJECT_ROOT, "__init__.py")

@@ -15,10 +15,11 @@ import time
 import json
 import bpy
 
-# Ensure project root is in sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+os.environ["BLENDER_AI_USE_MOCK_PROVIDER"] = "1"
 
 import importlib.util
 import bpy
