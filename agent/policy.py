@@ -129,6 +129,11 @@ class ApprovalPolicy:
             cam_name = args.get("name", "").strip()
             return f'Create camera "{cam_name}"' if cam_name else "Create camera"
 
+        if tool_name == "create_light":
+            l_name = args.get("name", "").strip()
+            l_type = args.get("light_type", "light").lower()
+            return f'Create {l_type} "{l_name}"' if l_name else f"Create {l_type}"
+
         if tool_name == "transform_object":
             obj_name = args.get("name", "").strip()
             return f'Transform "{obj_name}"' if obj_name else "Transform object"

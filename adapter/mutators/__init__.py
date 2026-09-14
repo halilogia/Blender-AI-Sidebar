@@ -2,6 +2,7 @@
 
 from .primitive_mutator import PrimitiveMutator, InvalidPrimitiveTypeError
 from .camera_mutator import CameraMutator
+from .light_mutator import LightMutator
 from .transform_mutator import TransformMutator
 from .delete_mutator import DeleteMutator
 from .material_mutator import MaterialMutator
@@ -11,6 +12,7 @@ __all__ = [
     "PrimitiveMutator",
     "InvalidPrimitiveTypeError",
     "CameraMutator",
+    "LightMutator",
     "TransformMutator",
     "DeleteMutator",
     "MaterialMutator",

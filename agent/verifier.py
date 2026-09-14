@@ -44,6 +44,8 @@ class ChangeVerifier:
             return self._verify_create(target, change_set)
         elif op == "create_camera":
             return self._verify_create_camera(target, change_set)
+        elif op == "create_light":
+            return self._verify_create_light(target, change_set)
         elif op == "transform":
             return self._verify_transform(target, change_set)
         elif op == "delete":
@@ -60,7 +62,7 @@ class ChangeVerifier:
                 mismatches=[
                     {
                         "property": "operation",
-                        "expected": "One of ['create', 'create_camera', 'transform', 'delete', 'set_material', 'assign_material']",
+                        "expected": "One of ['create', 'create_camera', 'create_light', 'transform', 'delete', 'set_material', 'assign_material']",
                         "actual": op,
                         "diff": None,
                     }
@@ -299,6 +301,97 @@ class ChangeVerifier:
                 )
 
         return self._build_result("create_camera", target, mismatches)
+
+    def _verify_create_light(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for light creation or modification."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # 1. Existence check
+        if not actual.get("exists", False):
+            mismatches.append(
+                {
+                    "property": "exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+            return self._build_result("create_light", target, mismatches)
+
+        # 2. Object Type check
+        expected_type = expected.get("type", "LIGHT")
+        actual_type = actual.get("type")
+        if actual_type != expected_type:
+            mismatches.append(
+                {
+                    "property": "type",
+                    "expected": expected_type,
+                    "actual": actual_type,
+                    "diff": None,
+                }
+            )
+
+        # 3. Light Type check (POINT, SUN, SPOT, AREA)
+        if "light_type" in expected and expected["light_type"] is not None:
+            exp_lt = str(expected["light_type"]).upper()
+            act_lt = str(actual.get("light_type", "")).upper()
+            if act_lt != exp_lt:
+                mismatches.append(
+                    {
+                        "property": "light_type",
+                        "expected": exp_lt,
+                        "actual": act_lt,
+                        "diff": None,
+                    }
+                )
+
+        # 4. Numeric vectors: location, rotation
+        for prop in ("location", "rotation"):
+            if prop in expected and expected[prop] is not None:
+                if prop not in actual or actual[prop] is None:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": expected[prop],
+                            "actual": None,
+                            "diff": None,
+                        }
+                    )
+                else:
+                    mismatch = self._compare_numeric_vector(
+                        prop,
+                        expected[prop],
+                        actual[prop],
+                        is_rotation=(prop == "rotation"),
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+        # 5. Energy check
+        if "energy" in expected and expected["energy"] is not None:
+            mismatch = self._compare_scalar("energy", expected["energy"], actual.get("energy"))
+            if mismatch:
+                mismatches.append(mismatch)
+
+        # 6. Color check
+        if "color" in expected and expected["color"] is not None:
+            if "color" not in actual or actual["color"] is None:
+                mismatches.append(
+                    {
+                        "property": "color",
+                        "expected": expected["color"],
+                        "actual": None,
+                        "diff": None,
+                    }
+                )
+            else:
+                mismatch = self._compare_numeric_vector("color", expected["color"], actual["color"], is_rotation=False)
+                if mismatch:
+                    mismatches.append(mismatch)
+
+        return self._build_result("create_light", target, mismatches)
 
     def _verify_transform(self, target: str, change_set: ChangeSet) -> VerificationResult:
         """Verification rules for object transformation."""
@@ -644,6 +737,41 @@ def build_change_set_from_result(
 
         return ChangeSet(
             operation="create_camera",
+            target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(result_data),
+        )
+
+    elif name == "create_light":
+        target_name = str(
+            result_data.get("object_name")
+            or arguments.get("name")
+            or "Light"
+        )
+        expected_after: Dict[str, Any] = {
+            "exists": True,
+            "type": "LIGHT",
+        }
+        if "light_type" in arguments and arguments["light_type"] is not None:
+            expected_after["light_type"] = str(arguments["light_type"]).upper()
+        elif "light_type" not in arguments and result_data.get("created", False):
+            expected_after["light_type"] = "POINT"
+
+        for prop in ("location", "rotation"):
+            if prop in arguments and arguments[prop] is not None:
+                expected_after[prop] = arguments[prop]
+
+        if "energy" in arguments and arguments["energy"] is not None:
+            expected_after["energy"] = float(arguments["energy"])
+
+        if "color" in arguments and arguments["color"] is not None:
+            raw_c = arguments["color"]
+            if isinstance(raw_c, (list, tuple)) and len(raw_c) == 3:
+                expected_after["color"] = [max(0.0, min(1.0, float(v))) for v in raw_c]
+
+        return ChangeSet(
+            operation="create_light",
             target_name=target_name,
             before=result_data.get("before"),
             expected_after=expected_after,

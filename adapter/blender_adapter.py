@@ -25,6 +25,7 @@ from adapter.mutators import (
     PrimitiveMutator,
     InvalidPrimitiveTypeError,
     CameraMutator,
+    LightMutator,
     TransformMutator,
     DeleteMutator,
     MaterialMutator,
@@ -317,6 +318,48 @@ class BlenderAdapter:
                 tool=tool_name,
                 error_type="ADAPTER_INTERNAL_ERROR",
                 message=f"Unexpected error creating/modifying camera: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def create_light(
+        self,
+        name: Optional[str] = None,
+        light_type: Optional[str] = None,
+        location: Optional[Any] = None,
+        rotation: Optional[Any] = None,
+        energy: Optional[float] = None,
+        color: Optional[Any] = None,
+    ) -> ToolResult:
+        """Create a new light or modify an existing light in the scene.
+
+        Returns:
+            ToolResult conforming to create_light contract.
+        """
+        assert_main_thread()
+        tool_name = "create_light"
+
+        try:
+            data = LightMutator.create_or_modify(
+                name=name,
+                light_type=light_type,
+                location=location,
+                rotation=rotation,
+                energy=energy,
+                color=color,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error creating/modifying light: {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
 

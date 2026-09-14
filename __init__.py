@@ -37,6 +37,7 @@ from .tools.read_only.inspect_material import InspectMaterialTool
 from .tools.read_only.inspect_mesh import InspectMeshTool
 from .tools.mutations.create_primitive import CreatePrimitiveTool
 from .tools.mutations.create_camera import CreateCameraTool
+from .tools.mutations.create_light import CreateLightTool
 from .tools.mutations.transform_object import TransformObjectTool
 from .tools.mutations.delete_object import DeleteObjectTool
 from .tools.mutations.set_material import SetMaterialTool
@@ -119,6 +120,7 @@ def register(provider: Optional[BaseProvider] = None):
     registry.register(InspectMeshTool())
     registry.register(CreatePrimitiveTool())
     registry.register(CreateCameraTool())
+    registry.register(CreateLightTool())
     registry.register(TransformObjectTool())
     registry.register(DeleteObjectTool())
     registry.register(SetMaterialTool())
