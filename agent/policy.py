@@ -97,7 +97,13 @@ class ApprovalPolicy:
         if tool is None:
             return ApprovalDecision.REQUIRE_APPROVAL
 
-        risk = getattr(tool, "risk_level", RiskLevel.HIGH)
+        if tool is not None and hasattr(tool, "get_risk_level"):
+            try:
+                risk = tool.get_risk_level(tool_call.arguments or {})
+            except Exception:
+                risk = getattr(tool, "risk_level", RiskLevel.HIGH)
+        else:
+            risk = getattr(tool, "risk_level", RiskLevel.HIGH)
         if isinstance(risk, str):
             try:
                 risk = RiskLevel(risk)
@@ -134,6 +140,16 @@ class ApprovalPolicy:
             l_type = args.get("light_type", "light").lower()
             return f'Create {l_type} "{l_name}"' if l_name else f"Create {l_type}"
 
+        if tool_name == "set_shading":
+            obj_name = args.get("name", "").strip()
+            shading = args.get("shading", "smooth").lower()
+            return f'Set {shading} shading on "{obj_name}"' if obj_name else f"Set {shading} shading"
+
+        if tool_name == "add_modifier":
+            obj_name = args.get("name", "").strip()
+            mod_type = args.get("modifier_type", "modifier").capitalize()
+            return f'Add {mod_type} modifier to "{obj_name}"' if obj_name else f"Add {mod_type} modifier"
+
         if tool_name == "transform_object":
             obj_name = args.get("name", "").strip()
             return f'Transform "{obj_name}"' if obj_name else "Transform object"
@@ -154,7 +170,13 @@ class ApprovalPolicy:
         """Construct a secure PendingApproval container for a gated tool call."""
         approval_id = f"appr_{uuid.uuid4().hex[:10]}"
         tool_name = tool_call.tool_name
-        risk = getattr(tool, "risk_level", RiskLevel.HIGH) if tool else RiskLevel.HIGH
+        if tool is not None and hasattr(tool, "get_risk_level"):
+            try:
+                risk = tool.get_risk_level(tool_call.arguments or {})
+            except Exception:
+                risk = getattr(tool, "risk_level", RiskLevel.HIGH)
+        else:
+            risk = getattr(tool, "risk_level", RiskLevel.HIGH) if tool else RiskLevel.HIGH
         if isinstance(risk, str):
             try:
                 risk = RiskLevel(risk)

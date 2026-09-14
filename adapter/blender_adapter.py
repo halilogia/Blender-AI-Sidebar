@@ -26,6 +26,8 @@ from adapter.mutators import (
     InvalidPrimitiveTypeError,
     CameraMutator,
     LightMutator,
+    ShadingMutator,
+    ModifierMutator,
     TransformMutator,
     DeleteMutator,
     MaterialMutator,
@@ -360,6 +362,79 @@ class BlenderAdapter:
                 tool=tool_name,
                 error_type="ADAPTER_INTERNAL_ERROR",
                 message=f"Unexpected error creating/modifying light: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def set_shading(self, name: str, shading: str) -> ToolResult:
+        """Set smooth or flat shading on all polygons of a target mesh object.
+
+        Returns:
+            ToolResult conforming to set_shading contract.
+        """
+        assert_main_thread()
+        tool_name = "set_shading"
+
+        try:
+            data = ShadingMutator.set_shading(name=name, shading=shading)
+            return ToolResult.ok(tool_name, data)
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error setting shading on '{name}': {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def add_modifier(
+        self,
+        name: str,
+        modifier_type: str,
+        modifier_name: Optional[str] = None,
+        width: Optional[float] = None,
+        segments: Optional[int] = None,
+        levels: Optional[int] = None,
+        operation: Optional[str] = None,
+        target_object: Optional[str] = None,
+    ) -> ToolResult:
+        """Add or update a modifier on a target mesh object.
+
+        Returns:
+            ToolResult conforming to add_modifier contract.
+        """
+        assert_main_thread()
+        tool_name = "add_modifier"
+
+        try:
+            data = ModifierMutator.add_modifier(
+                name=name,
+                modifier_type=modifier_type,
+                modifier_name=modifier_name,
+                width=width,
+                segments=segments,
+                levels=levels,
+                operation=operation,
+                target_object=target_object,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error adding modifier to '{name}': {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
 

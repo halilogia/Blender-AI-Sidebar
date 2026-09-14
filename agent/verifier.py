@@ -46,6 +46,10 @@ class ChangeVerifier:
             return self._verify_create_camera(target, change_set)
         elif op == "create_light":
             return self._verify_create_light(target, change_set)
+        elif op == "set_shading":
+            return self._verify_set_shading(target, change_set)
+        elif op == "add_modifier":
+            return self._verify_add_modifier(target, change_set)
         elif op == "transform":
             return self._verify_transform(target, change_set)
         elif op == "delete":
@@ -62,7 +66,7 @@ class ChangeVerifier:
                 mismatches=[
                     {
                         "property": "operation",
-                        "expected": "One of ['create', 'create_camera', 'create_light', 'transform', 'delete', 'set_material', 'assign_material']",
+                        "expected": "One of ['create', 'create_camera', 'create_light', 'set_shading', 'add_modifier', 'transform', 'delete', 'set_material', 'assign_material']",
                         "actual": op,
                         "diff": None,
                     }
@@ -392,6 +396,134 @@ class ChangeVerifier:
                     mismatches.append(mismatch)
 
         return self._build_result("create_light", target, mismatches)
+
+    def _verify_set_shading(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for polygon shading mutations."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # 1. Existence check
+        if not actual.get("exists", False):
+            mismatches.append(
+                {
+                    "property": "exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+            return self._build_result("set_shading", target, mismatches)
+
+        # 2. Shading check
+        if "shading" in expected and expected["shading"] is not None:
+            exp_sh = str(expected["shading"]).upper()
+            act_sh = str(actual.get("shading", "")).upper()
+            if act_sh != exp_sh:
+                mismatches.append(
+                    {
+                        "property": "shading",
+                        "expected": exp_sh,
+                        "actual": act_sh,
+                        "diff": None,
+                    }
+                )
+
+        return self._build_result("set_shading", target, mismatches)
+
+    def _verify_add_modifier(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for geometry modifier mutations."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # 1. Existence check
+        if not actual.get("exists", False):
+            mismatches.append(
+                {
+                    "property": "exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+            return self._build_result("add_modifier", target, mismatches)
+
+        # 2. Modifier type check
+        if "modifier_type" in expected and expected["modifier_type"] is not None:
+            exp_mt = str(expected["modifier_type"]).upper()
+            act_mt = str(actual.get("modifier_type", "")).upper()
+            if act_mt != exp_mt:
+                mismatches.append(
+                    {
+                        "property": "modifier_type",
+                        "expected": exp_mt,
+                        "actual": act_mt,
+                        "diff": None,
+                    }
+                )
+
+        # 3. Specific modifier properties
+        mod_type = expected.get("modifier_type")
+        if mod_type == "BEVEL":
+            if "width" in expected and expected["width"] is not None:
+                mismatch = self._compare_scalar("width", expected["width"], actual.get("width"))
+                if mismatch:
+                    mismatches.append(mismatch)
+            if "segments" in expected and expected["segments"] is not None:
+                exp_seg = int(expected["segments"])
+                act_seg = int(actual.get("segments", 0))
+                if exp_seg != act_seg:
+                    mismatches.append(
+                        {
+                            "property": "segments",
+                            "expected": exp_seg,
+                            "actual": act_seg,
+                            "diff": act_seg - exp_seg,
+                        }
+                    )
+
+        elif mod_type == "SUBSURF":
+            if "levels" in expected and expected["levels"] is not None:
+                exp_lvl = int(expected["levels"])
+                act_lvl = int(actual.get("levels", 0))
+                if exp_lvl != act_lvl:
+                    mismatches.append(
+                        {
+                            "property": "levels",
+                            "expected": exp_lvl,
+                            "actual": act_lvl,
+                            "diff": act_lvl - exp_lvl,
+                        }
+                    )
+
+        elif mod_type == "BOOLEAN":
+            if "operation" in expected and expected["operation"] is not None:
+                exp_op = str(expected["operation"]).upper()
+                act_op = str(actual.get("operation", "")).upper()
+                if exp_op != act_op:
+                    mismatches.append(
+                        {
+                            "property": "operation",
+                            "expected": exp_op,
+                            "actual": act_op,
+                            "diff": None,
+                        }
+                    )
+            if "target_object" in expected and expected["target_object"] is not None:
+                exp_target = str(expected["target_object"]).strip()
+                act_target = str(actual.get("target_object", "")).strip()
+                if exp_target != act_target:
+                    mismatches.append(
+                        {
+                            "property": "target_object",
+                            "expected": exp_target,
+                            "actual": act_target,
+                            "diff": None,
+                        }
+                    )
+
+        return self._build_result("add_modifier", target, mismatches)
 
     def _verify_transform(self, target: str, change_set: ChangeSet) -> VerificationResult:
         """Verification rules for object transformation."""
@@ -772,6 +904,53 @@ def build_change_set_from_result(
 
         return ChangeSet(
             operation="create_light",
+            target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(result_data),
+        )
+
+    elif name == "set_shading":
+        target_name = str(
+            result_data.get("object_name")
+            or arguments.get("name")
+            or "Unknown"
+        )
+        expected_after: Dict[str, Any] = {
+            "exists": True,
+            "shading": str(arguments.get("shading", "")).upper(),
+        }
+        return ChangeSet(
+            operation="set_shading",
+            target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(result_data),
+        )
+
+    elif name == "add_modifier":
+        target_name = str(
+            result_data.get("object_name")
+            or arguments.get("name")
+            or "Unknown"
+        )
+        mod_type = str(arguments.get("modifier_type", "")).upper()
+        expected_after: Dict[str, Any] = {
+            "exists": True,
+            "modifier_type": mod_type,
+        }
+        if mod_type == "BEVEL":
+            expected_after["width"] = float(arguments.get("width", 0.05))
+            expected_after["segments"] = int(arguments.get("segments", 2))
+        elif mod_type == "SUBSURF":
+            expected_after["levels"] = int(arguments.get("levels", 1))
+        elif mod_type == "BOOLEAN":
+            expected_after["operation"] = str(arguments.get("operation", "DIFFERENCE")).upper()
+            if "target_object" in arguments and arguments["target_object"] is not None:
+                expected_after["target_object"] = str(arguments["target_object"]).strip()
+
+        return ChangeSet(
+            operation="add_modifier",
             target_name=target_name,
             before=result_data.get("before"),
             expected_after=expected_after,

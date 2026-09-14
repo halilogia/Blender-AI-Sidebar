@@ -38,6 +38,8 @@ from .tools.read_only.inspect_mesh import InspectMeshTool
 from .tools.mutations.create_primitive import CreatePrimitiveTool
 from .tools.mutations.create_camera import CreateCameraTool
 from .tools.mutations.create_light import CreateLightTool
+from .tools.mutations.set_shading import SetShadingTool
+from .tools.mutations.add_modifier import AddModifierTool
 from .tools.mutations.transform_object import TransformObjectTool
 from .tools.mutations.delete_object import DeleteObjectTool
 from .tools.mutations.set_material import SetMaterialTool
@@ -121,6 +123,8 @@ def register(provider: Optional[BaseProvider] = None):
     registry.register(CreatePrimitiveTool())
     registry.register(CreateCameraTool())
     registry.register(CreateLightTool())
+    registry.register(SetShadingTool())
+    registry.register(AddModifierTool())
     registry.register(TransformObjectTool())
     registry.register(DeleteObjectTool())
     registry.register(SetMaterialTool())
