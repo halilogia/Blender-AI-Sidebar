@@ -151,7 +151,11 @@ def register(provider: Optional[BaseProvider] = None):
     else:
         effective_provider = create_production_provider()
 
-    _runtime = AgentRuntime(provider=effective_provider, dispatcher=dispatcher)
+    _runtime = AgentRuntime(
+        provider=effective_provider,
+        dispatcher=dispatcher,
+        auto_approve_low_risk_plans=True,
+    )
 
     # 5. Timer Bridge for Async Event Loop
     _timer_bridge = TimerBridge(runtime=_runtime, event_queue=_runtime.event_queue)

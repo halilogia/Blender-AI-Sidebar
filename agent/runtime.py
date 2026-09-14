@@ -111,6 +111,7 @@ class AgentRuntime:
         verifier: Optional[Union[ChangeVerifier, bool]] = None,
         visual_verifier: Optional[VisualVerifier] = None,
         max_plan_repairs: int = 1,
+        auto_approve_low_risk_plans: bool = False,
     ):
         self.provider = provider
         self.dispatcher = dispatcher
@@ -142,6 +143,7 @@ class AgentRuntime:
         self.conversation = Conversation()
         self.max_tool_rounds: int = max_tool_rounds
         self.max_plan_repairs: int = max_plan_repairs
+        self.auto_approve_low_risk_plans: bool = bool(auto_approve_low_risk_plans)
         self._current_tool_round: int = 0
         self._current_plan_repairs: int = 0
         self._streaming_text: str = ""
@@ -159,6 +161,7 @@ class AgentRuntime:
         self._current_tool_results: List[ToolResult] = []
         self._pending_approval: Optional[PendingApproval] = None
         self._pending_plan_review = None
+        self._last_plan_summary: Optional[Dict[str, Any]] = None
         self._consumed_plan_tokens = set()
         self._current_metrics: Optional[TurnMetrics] = None
         self._last_result: Optional[AgentResult] = None
@@ -178,6 +181,11 @@ class AgentRuntime:
     def current_plan_repairs(self) -> int:
         """Get the count of plan repair attempts in the active turn."""
         return self._current_plan_repairs
+
+    @property
+    def last_plan_summary(self) -> Optional[Dict[str, Any]]:
+        """Return the latest plan/task state for UI rendering."""
+        return dict(self._last_plan_summary) if self._last_plan_summary else None
 
     @property
     def current_state(self) -> AgentState:
@@ -368,11 +376,26 @@ class AgentRuntime:
         self._last_plan_validation_error = None
         self._pending_plan_review = review
         self.state_machine.transition_to(AgentState.PENDING_APPROVAL)
-        self.event_queue.put(ApprovalRequiredEvent(
-            approval_id=review.approval_id, tool_name="plan",
-            risk_level=review.overall_risk.value,
-            description=f"Review plan '{review.title}' ({review.steps_total} steps)",
-            turn_id=review.turn_id))
+        self._last_plan_summary = self._plan_task_state(review)
+
+        # Low-risk plans are safe to execute without interrupting the user.
+        # Keep the explicit approval path for medium/high/critical plans.
+        auto_approve = (
+            self.auto_approve_low_risk_plans
+            and review.overall_risk.value in ("READ_ONLY", "LOW")
+        )
+        if auto_approve:
+            _logger.info(
+                "Auto-approving low-risk plan %s (%d steps)",
+                review.approval_id,
+                review.steps_total,
+            )
+        else:
+            self.event_queue.put(ApprovalRequiredEvent(
+                approval_id=review.approval_id, tool_name="plan",
+                risk_level=review.overall_risk.value,
+                description=f"Review plan '{review.title}' ({review.steps_total} steps)",
+                turn_id=review.turn_id))
         try:
             self.history.add(
                 item_id=f"{review.turn_id}_plan_{review.approval_id}",
@@ -386,7 +409,46 @@ class AgentRuntime:
             )
         except Exception:
             pass
+
+        if auto_approve:
+            self.approve_plan(review.approval_id)
         return review
+
+    @staticmethod
+    def _plan_task_state(review: Any, summary: Any = None, status: Optional[str] = None) -> Dict[str, Any]:
+        """Convert a plan/review into a compact task-list UI payload."""
+        result_by_step = {}
+        if summary is not None:
+            for result in getattr(summary, "step_results", ()):
+                result_by_step[result.step_id] = result
+
+        steps = []
+        for step in review.plan.steps:
+            result = result_by_step.get(step.step_id)
+            steps.append({
+                "step_id": step.step_id,
+                "tool_name": step.tool_name,
+                "description": step.description or step.tool_name,
+                "status": (
+                    result.status.value
+                    if result is not None and hasattr(result.status, "value")
+                    else (result.status if result is not None else "PENDING")
+                ),
+                "error_message": getattr(result, "error_message", None) if result else None,
+            })
+
+        resolved_status = status
+        if resolved_status is None:
+            resolved_status = getattr(getattr(summary, "status", None), "value", None) or "PENDING_APPROVAL"
+        return {
+            "kind": "plan_tasks",
+            "plan_id": review.plan.plan_id,
+            "title": review.title,
+            "status": resolved_status,
+            "steps_total": len(steps),
+            "steps_completed": sum(1 for item in steps if item["status"] == "COMPLETED"),
+            "steps": steps,
+        }
 
     def _discard_active_turn_context(self) -> None:
         """Remove an incomplete active turn from conversation history.
@@ -447,6 +509,7 @@ class AgentRuntime:
             tool_name="plan", turn_id=review.turn_id))
         self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
         summary = self._execute_approved_plan(review)
+        self._last_plan_summary = self._plan_task_state(review, summary=summary)
 
         # 1. Convert PlanExecutionSummary to compact JSON
         summary_dict = summary.to_dict() if hasattr(summary, "to_dict") else {"status": "SUCCESS"}
@@ -568,6 +631,7 @@ class AgentRuntime:
             return None
         self._pending_plan_review = None
         self._consumed_plan_tokens.add(approval_id)
+        self._last_plan_summary = self._plan_task_state(review, status="REJECTED")
 
         self.event_queue.put(ApprovalResolvedEvent(
             approval_id=approval_id, decision="REJECTED",
@@ -812,6 +876,7 @@ class AgentRuntime:
         self._current_tool_results = []
         self._pending_approval = None
         self._pending_plan_review = None
+        self._last_plan_summary = None
         self._active_conversation_start = None
         self._current_tool_round = 0
         self._current_plan_repairs = 0
@@ -831,6 +896,7 @@ class AgentRuntime:
         self._pending_approval = None
         self._pending_plan_review = None
         self._active_conversation_start = None
+        self._last_plan_summary = None
         self._last_result = None
 
     def submit_prompt(

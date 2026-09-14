@@ -291,6 +291,43 @@ def draw_overlay_hud(context) -> None:
             user_text_y -= 16.0
         content_y = user_y + user_h + 8.0
 
+    # OpenCode-style task checklist.  This is deliberately separate from the
+    # approval card: approval answers "may I run it?", while this answers
+    # "what happened to each step?".
+    if overlay_state.task_plan and not overlay_state.pending_approval:
+        task = overlay_state.task_plan
+        steps = list(task.get("steps", []))[:7]
+        completed = int(task.get("steps_completed", 0) or 0)
+        total = int(task.get("steps_total", len(steps)) or len(steps))
+        task_h = 54.0 + len(steps) * 18.0
+        task_x = bar_x
+        task_y = content_y
+        draw_rounded_shadow(task_x, task_y, bar_w, task_h, 14.0, shadow_size=10.0)
+        draw_rounded_rect(task_x, task_y, bar_w, task_h, 14.0, (0.07, 0.08, 0.10, 0.96))
+        draw_text(
+            f"Tasks · {completed}/{total} completed",
+            task_x + 16.0,
+            task_y + task_h - 22.0,
+            size=11,
+            color=(0.82, 0.86, 0.92, 1.0),
+        )
+        task_line_y = task_y + task_h - 42.0
+        for item in steps:
+            step_status = str(item.get("status", "PENDING")).upper()
+            if step_status == "COMPLETED":
+                marker, marker_color = "✓", (0.35, 0.95, 0.5, 1.0)
+            elif step_status == "FAILED":
+                marker, marker_color = "✕", (1.0, 0.35, 0.35, 1.0)
+            elif step_status == "RUNNING":
+                marker, marker_color = "●", (1.0, 0.78, 0.25, 1.0)
+            else:
+                marker, marker_color = "○", (0.55, 0.6, 0.68, 1.0)
+            label = item.get("description") or item.get("tool_name", "Task")
+            draw_text(marker, task_x + 16.0, task_line_y, size=11, color=marker_color)
+            draw_text(str(label)[:88], task_x + 34.0, task_line_y, size=10, color=(0.82, 0.84, 0.88, 1.0))
+            task_line_y -= 18.0
+        content_y = task_y + task_h + 8.0
+
     # -------------------------------------------------------------------------
     # 7. Upper Drawer: Approval Card (High Priority) OR Response Drawer
     # -------------------------------------------------------------------------

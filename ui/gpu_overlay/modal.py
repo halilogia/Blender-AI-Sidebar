@@ -119,6 +119,11 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                         overlay_state.streaming_response_text = live_text
                         state_changed = True
 
+                    task_plan = getattr(runtime, "last_plan_summary", None)
+                    if overlay_state.task_plan != task_plan:
+                        overlay_state.task_plan = task_plan
+                        state_changed = True
+
                     # Sync pending approval (plan review takes precedence as batch card)
                     plan_review = getattr(runtime, "pending_plan_review", None)
                     if plan_review is not None:
@@ -333,6 +338,7 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 overlay_state.status_text = "PROCESSING"
                 overlay_state.last_response_text = ""
                 overlay_state.streaming_response_text = ""
+                overlay_state.task_plan = None
                 runtime.submit_prompt(prompt)
         except Exception as exc:
             _logger.exception("HUD prompt submission failed")

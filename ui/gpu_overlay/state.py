@@ -32,6 +32,7 @@ class GPUOverlayState:
         self.last_response_text: str = ""
         self.streaming_response_text: str = ""
         self.response_copy_btn_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        self.task_plan: Optional[Dict[str, Any]] = None
 
         # Approval Card Bounding Boxes and State
         self.pending_approval: Optional[Dict[str, Any]] = None

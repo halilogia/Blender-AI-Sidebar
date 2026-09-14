@@ -139,6 +139,30 @@ class TestAgenticLoopIntegration(unittest.TestCase):
         self.assertEqual(runtime.current_state, AgentState.PROCESSING)
         mock_worker.submit_task.assert_called()
 
+    def test_low_risk_plan_can_be_auto_approved(self):
+        """Production mode may execute a LOW-risk plan without a UI gate."""
+        runtime, adapter, mock_worker = _setup_runtime()
+        runtime.auto_approve_low_risk_plans = True
+
+        turn_id = runtime.submit_prompt("Create and move a cube")
+        response = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(
+                call_id="call_auto_plan",
+                tool_name="propose_plan",
+                arguments=_create_test_plan("Auto plan"),
+            )],
+            is_final=False,
+        )
+        runtime.process_event(ProviderResponseReadyEvent(response=response, turn_id=turn_id))
+
+        self.assertIsNone(runtime.pending_plan_review)
+        self.assertEqual(runtime.current_state, AgentState.PROCESSING)
+        self.assertIsNotNone(runtime.last_plan_summary)
+        self.assertEqual(runtime.last_plan_summary["status"], "COMPLETED")
+        self.assertEqual(runtime.last_plan_summary["steps_completed"], 2)
+        mock_worker.submit_task.assert_called()
+
     def test_a_successful_multi_round_plan(self):
         """Test A: User prompt -> propose_plan -> approve -> plan COMPLETED
         -> TOOL feedback -> second LLM response -> final answer.
