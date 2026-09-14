@@ -324,6 +324,10 @@ class AISIDEBAR_OT_viewport_hud(Operator):
             from ... import get_runtime
             runtime = get_runtime()
             if runtime:
+                # Keep the submitted user turn visible after the input buffer
+                # is cleared, so a failed/slow request is not mistaken for a
+                # click that never reached the runtime.
+                overlay_state.last_prompt_text = prompt
                 overlay_state.reset_input()
                 overlay_state.is_processing = True
                 overlay_state.status_text = "PROCESSING"

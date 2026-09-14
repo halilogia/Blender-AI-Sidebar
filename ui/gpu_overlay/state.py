@@ -28,6 +28,7 @@ class GPUOverlayState:
         self.status_text: str = "Ready"
         self.is_processing: bool = False
         self.active_tool_name: Optional[str] = None
+        self.last_prompt_text: str = ""
         self.last_response_text: str = ""
         self.streaming_response_text: str = ""
         self.response_copy_btn_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)

@@ -113,6 +113,32 @@ def _setup_runtime():
 class TestAgenticLoopIntegration(unittest.TestCase):
     """Full integration test suite for multi-round agentic plan & repair loops."""
 
+    def test_cancel_discards_unresolved_tool_call_before_next_prompt(self):
+        """A cancelled approval turn must not poison the next conversation turn."""
+        runtime, _adapter, mock_worker = _setup_runtime()
+
+        turn_id = runtime.submit_prompt("Delete the old cube")
+        pending_delete = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(
+                call_id="call_delete_cancelled",
+                tool_name="delete_object",
+                arguments={"name": "Cube"},
+            )],
+            is_final=False,
+        )
+        runtime.process_event(ProviderResponseReadyEvent(response=pending_delete, turn_id=turn_id))
+        self.assertEqual(runtime.current_state, AgentState.PENDING_APPROVAL)
+
+        runtime.cancel_current_turn()
+        runtime.conversation.validate_sequence()
+        self.assertEqual(runtime.conversation.messages, [])
+
+        next_turn = runtime.submit_prompt("Inspect the scene")
+        self.assertEqual(next_turn, "turn_2")
+        self.assertEqual(runtime.current_state, AgentState.PROCESSING)
+        mock_worker.submit_task.assert_called()
+
     def test_a_successful_multi_round_plan(self):
         """Test A: User prompt -> propose_plan -> approve -> plan COMPLETED
         -> TOOL feedback -> second LLM response -> final answer.

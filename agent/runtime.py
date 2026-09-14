@@ -150,6 +150,10 @@ class AgentRuntime:
         self._turn_counter: int = 0
         self._current_turn_id: Optional[str] = None
         self._current_cancel_event: Optional[threading.Event] = None
+        # Index of the first message belonging to the active turn.  If a turn
+        # is cancelled or fails between an assistant tool-call and its TOOL
+        # result, the incomplete tail must be removed before the next prompt.
+        self._active_conversation_start: Optional[int] = None
         self._current_prompt: str = ""
         self._expected_visual_description: Optional[str] = None
         self._current_tool_results: List[ToolResult] = []
@@ -383,6 +387,22 @@ class AgentRuntime:
         except Exception:
             pass
         return review
+
+    def _discard_active_turn_context(self) -> None:
+        """Remove an incomplete active turn from conversation history.
+
+        A cancelled turn may already contain an ASSISTANT message with
+        tool_calls but no matching TOOL messages.  Keeping that tail makes
+        the next USER message invalid according to the conversation protocol.
+        Preserve all completed history before the active turn.
+        """
+        start = self._active_conversation_start
+        if start is None:
+            return
+        messages = self.conversation.messages
+        if 0 <= start <= len(messages):
+            self.conversation = Conversation(messages[:start])
+        self._active_conversation_start = None
 
     def _execute_approved_plan(self, review: Any) -> Any:
         token = review.approval_id
@@ -792,6 +812,7 @@ class AgentRuntime:
         self._current_tool_results = []
         self._pending_approval = None
         self._pending_plan_review = None
+        self._active_conversation_start = None
         self._current_tool_round = 0
         self._current_plan_repairs = 0
         self._streaming_text = ""
@@ -809,6 +830,7 @@ class AgentRuntime:
         self._current_tool_results = []
         self._pending_approval = None
         self._pending_plan_review = None
+        self._active_conversation_start = None
         self._last_result = None
 
     def submit_prompt(
@@ -839,6 +861,17 @@ class AgentRuntime:
             )
             raise RuntimeError("Active turn in progress. Concurrent submission rejected.")
 
+        # Recover defensively from a previous interrupted turn.  Normally
+        # cancel_current_turn() performs this cleanup, but this guard also
+        # protects callers that reset state after an exception.
+        try:
+            self.conversation.validate_sequence()
+        except ValueError:
+            if self._active_conversation_start is None:
+                raise
+            _logger.warning("Discarding incomplete conversation tail before new prompt")
+            self._discard_active_turn_context()
+
         self._turn_counter += 1
         turn_id = f"turn_{self._turn_counter}"
         self._current_turn_id = turn_id
@@ -853,6 +886,7 @@ class AgentRuntime:
         _logger.info("Submitted turn %s (prompt_length=%d)", turn_id, len(prompt))
 
         # Record user prompt in session Conversation
+        self._active_conversation_start = len(self.conversation)
         self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt, image_id=image_id))
 
         # Check for pre-flight context compaction before worker dispatch
@@ -1174,7 +1208,15 @@ class AgentRuntime:
 
                     args = dict(tool_call.arguments or {})
                     args.pop("overall_risk", None)
-                    review = self.request_plan_review(args, call_id=tool_call.call_id)
+                    try:
+                        review = self.request_plan_review(args, call_id=tool_call.call_id)
+                    except Exception as exc:
+                        # Plan validation must fail as a normal tool round-trip,
+                        # not escape TimerBridge and leave an unresolved tool
+                        # call that poisons the next user prompt.
+                        _logger.exception("Plan review construction failed")
+                        self._last_plan_validation_error = f"Plan validation failed: {exc}"
+                        review = None
                     if review is None:
                         self.state_machine.transition_to(AgentState.ERROR)
                         if self._current_metrics:
@@ -1443,6 +1485,7 @@ class AgentRuntime:
         self._pending_approval = None
         self._pending_plan_review = None
         self._current_plan_repairs = 0
+        self._discard_active_turn_context()
         if self._current_turn_id is not None:
             if self._current_cancel_event:
                 self._current_cancel_event.set()

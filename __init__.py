@@ -29,7 +29,11 @@ from .ui.header import register_header, unregister_header
 from .ui.gpu_overlay import register as register_gpu_overlay, unregister as unregister_gpu_overlay
 from .ui.timer_bridge import TimerBridge
 from .adapter.blender_adapter import BlenderAdapter
-from .tools.registry import ToolRegistry
+# The rest of the agent imports the top-level ``tools`` package after adding
+# the addon directory to sys.path above.  Importing the registry relatively
+# here creates a second class identity (``blender_ai_sidebar.tools.registry``)
+# and makes isinstance checks in plan validation fail inside Blender.
+from tools.registry import ToolRegistry
 from .tools.read_only.inspect_scene import InspectSceneTool
 from .tools.read_only.inspect_selection import InspectSelectionTool
 from .tools.read_only.inspect_object import InspectObjectTool

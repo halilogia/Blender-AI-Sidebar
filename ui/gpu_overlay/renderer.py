@@ -273,7 +273,26 @@ def draw_overlay_hud(context) -> None:
     draw_text("Esc to close", p3_x + 10.0, pill_y + 6.0, size=10, color=(0.5, 0.52, 0.56, 0.9))
 
     # -------------------------------------------------------------------------
-    # 6. Upper Drawer: Approval Card (High Priority) OR Response Drawer
+    # 6. Conversation drawers: submitted user turn, then approval/response
+    # -------------------------------------------------------------------------
+    content_y = bar_y + bar_h + 10.0
+    if overlay_state.last_prompt_text:
+        user_lines = wrap_text(overlay_state.last_prompt_text, bar_w - 36.0, 11)
+        user_lines = user_lines[:2]
+        user_h = 42.0 + len(user_lines) * 16.0
+        user_x = bar_x
+        user_y = content_y
+        draw_rounded_shadow(user_x, user_y, bar_w, user_h, 14.0, shadow_size=10.0)
+        draw_rounded_rect(user_x, user_y, bar_w, user_h, 14.0, (0.07, 0.08, 0.10, 0.94))
+        draw_text("You", user_x + 16.0, user_y + user_h - 20.0, size=11, color=(0.62, 0.78, 1.0, 1.0))
+        user_text_y = user_y + user_h - 38.0
+        for line in user_lines:
+            draw_text(line, user_x + 16.0, user_text_y, size=11, color=(0.88, 0.9, 0.94, 1.0))
+            user_text_y -= 16.0
+        content_y = user_y + user_h + 8.0
+
+    # -------------------------------------------------------------------------
+    # 7. Upper Drawer: Approval Card (High Priority) OR Response Drawer
     # -------------------------------------------------------------------------
     if overlay_state.pending_approval:
         # Approval Card takes visual precedence over regular response drawer
@@ -283,7 +302,7 @@ def draw_overlay_hud(context) -> None:
         shown_steps = appr.get("steps_shown", []) if is_plan else []
         card_h = 142.0 + min(len(shown_steps), 5) * 18.0 if is_plan else 106.0
         card_x = bar_x
-        card_y = bar_y + bar_h + 10.0
+        card_y = content_y
         corner_r = 16.0
 
         overlay_state.approval_card_rect = (card_x, card_y, card_w, card_h)
@@ -368,7 +387,7 @@ def draw_overlay_hud(context) -> None:
                 max_lines = max(1, min(len(body_lines), 10))
                 drawer_h = 58.0 + max_lines * 18.0
                 drawer_x = bar_x
-                drawer_y = bar_y + bar_h + 10.0
+                drawer_y = content_y
 
                 # Drawer shadow & background
                 draw_rounded_shadow(drawer_x, drawer_y, drawer_w, drawer_h, corner_r, shadow_size=12.0)
