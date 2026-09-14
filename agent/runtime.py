@@ -316,7 +316,7 @@ class AgentRuntime:
         )
         return executor.execute_plan(raw_plan)
 
-    def request_plan_review(self, raw_plan: Any) -> Any:
+    def request_plan_review(self, raw_plan: Any, call_id: str = "") -> Any:
         """Validate plan and create single batch-approval review point. No step executes."""
         from agent.plan_review import build_plan_review
 
@@ -325,7 +325,8 @@ class AgentRuntime:
             self._current_turn_id = f"turn_{self._turn_counter}"
         review, err = build_plan_review(
             raw_plan, self.dispatcher.registry,
-            self._current_turn_id, self.policy)
+            self._current_turn_id, self.policy,
+            call_id=call_id)
         if review is None:
             return None
         self._pending_plan_review = review
@@ -370,7 +371,7 @@ class AgentRuntime:
             self._consumed_plan_tokens.add(token)
 
     def approve_plan(self, approval_id: str) -> Any:
-        """Approve pending plan review; executes immutable plan exactly once."""
+        """Approve pending plan review; executes immutable plan exactly once and resumes agent loop."""
         from agent.policy import InvalidApprovalError, NoPendingApprovalError
 
         review = self._pending_plan_review
@@ -393,11 +394,109 @@ class AgentRuntime:
             tool_name="plan", turn_id=review.turn_id))
         self.state_machine.transition_to(AgentState.EXECUTING_TOOL)
         summary = self._execute_approved_plan(review)
+
+        # 1. Convert PlanExecutionSummary to compact JSON
+        summary_dict = summary.to_dict() if hasattr(summary, "to_dict") else {"status": "SUCCESS"}
+        summary_content = json.dumps(summary_dict, ensure_ascii=False)
+        tool_call_id = review.call_id or f"call_{review.approval_id}"
+
+        # 2. Add ChatMessage with role=Role.TOOL to conversation
+        self.conversation.add_message(
+            ChatMessage(
+                role=Role.TOOL,
+                content=summary_content,
+                tool_call_id=tool_call_id,
+                name="propose_plan",
+            )
+        )
+
+        # 3. Add ToolResult and update history / event_queue
+        from core.types import ToolResult
+        from agent.plan_models import PlanStatus
+
+        is_success = getattr(summary, "status", None) == PlanStatus.COMPLETED
+        if is_success:
+            tool_res = ToolResult.ok(tool="propose_plan", data=summary_dict)
+            status_badge = "OK"
+            summary_str = f"Plan '{review.title}' completed ({getattr(summary, 'steps_completed', 0)}/{getattr(summary, 'steps_total', 0)} steps)."
+        else:
+            err_msg = getattr(summary, "failure_reason", None) or "Plan execution failed"
+            tool_res = ToolResult.fail(
+                tool="propose_plan",
+                error_type="PLAN_EXECUTION_FAILED",
+                message=err_msg,
+                details=summary_dict,
+            )
+            status_badge = "FAIL"
+            summary_str = f"Plan '{review.title}' failed: {err_msg}"
+
+        self._current_tool_results.append(tool_res)
+
+        self.history.add(
+            item_id=f"{review.turn_id}_plan_exec_{len(self._current_tool_results)}",
+            turn_id=review.turn_id,
+            kind=HistoryKind.TOOL,
+            title=f"Plan: {review.title} [Approved]",
+            status=status_badge,
+            summary=summary_str,
+            detail=json.dumps(summary_dict, indent=2, sort_keys=True),
+        )
+        self.event_queue.put(ToolResultReadyEvent(tool_result=tool_res, turn_id=review.turn_id))
+
+        # 4. State must be AgentState.PROCESSING
         self.state_machine.transition_to(AgentState.PROCESSING)
+
+        # 5. Build context via ContextBuilder and submit task to worker
+        context = None
+        if hasattr(self.provider, "stream_chat"):
+            tools = self.dispatcher.registry.list()
+            try:
+                context = ContextBuilder.build(
+                    conversation=self.conversation,
+                    tools=tools,
+                    image_resolver=self._resolve_image_bytes,
+                )
+            except ImageResolutionError as exc:
+                self.state_machine.transition_to(AgentState.ERROR)
+                if self._current_metrics:
+                    self._current_metrics.t_completed = time.time()
+                self.history.add(
+                    item_id=f"{review.turn_id}_error",
+                    turn_id=review.turn_id,
+                    kind=HistoryKind.ERROR,
+                    title="Error: IMAGE_NOT_FOUND",
+                    status="ERROR",
+                    summary=str(exc),
+                    detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                )
+                err_res = AgentResult(
+                    final_text=f"Error (IMAGE_NOT_FOUND): {exc}",
+                    tool_results=list(self._current_tool_results),
+                    state=AgentState.ERROR.value,
+                )
+                self._last_result = err_res
+                self.event_queue.put(
+                    AgentErrorEvent(
+                        error_type="IMAGE_NOT_FOUND",
+                        message=str(exc),
+                        turn_id=review.turn_id,
+                        details={"image_id": exc.image_id},
+                    )
+                )
+                self._current_turn_id = None
+                return err_res
+
+        self.worker.submit_task(
+            turn_id=review.turn_id,
+            prompt=self._current_prompt,
+            tool_results=list(self._current_tool_results),
+            cancel_event=self._current_cancel_event,
+            context=context,
+        )
         return summary
 
     def reject_plan(self, approval_id: str) -> Any:
-        """Reject pending plan review; zero steps execute."""
+        """Reject pending plan review; zero steps execute and informs LLM via ToolResult."""
         from agent.policy import InvalidApprovalError, NoPendingApprovalError
 
         review = self._pending_plan_review
@@ -409,11 +508,111 @@ class AgentRuntime:
         if review.turn_id != self._current_turn_id:
             raise InvalidApprovalError(
                 f"Stale approval request: pending turn '{review.turn_id}' does not match active turn '{self._current_turn_id}'.")
+        if approval_id in self._consumed_plan_tokens:
+            raise InvalidApprovalError(f"Plan approval '{approval_id}' already consumed.")
+        if self._current_cancel_event and self._current_cancel_event.is_set():
+            self._pending_plan_review = None
+            return None
         self._pending_plan_review = None
+        self._consumed_plan_tokens.add(approval_id)
+
         self.event_queue.put(ApprovalResolvedEvent(
             approval_id=approval_id, decision="REJECTED",
             tool_name="plan", turn_id=review.turn_id))
+
+        # 1. Synthesize controlled JSON with USER_REJECTED
+        tool_call_id = review.call_id or f"call_{review.approval_id}"
+        rejection_data = {
+            "status": "USER_REJECTED",
+            "plan_id": review.plan.plan_id,
+            "title": review.title,
+            "error": f"User rejected execution of plan '{review.title}'.",
+            "type": "USER_REJECTED",
+        }
+        rejection_content = json.dumps(rejection_data, ensure_ascii=False)
+
+        # 2. Add ChatMessage with role=Role.TOOL to conversation
+        self.conversation.add_message(
+            ChatMessage(
+                role=Role.TOOL,
+                content=rejection_content,
+                tool_call_id=tool_call_id,
+                name="propose_plan",
+            )
+        )
+
+        # 3. Add ToolResult and update history / event_queue
+        from core.types import ToolResult
+
+        tool_res = ToolResult.fail(
+            tool="propose_plan",
+            error_type="USER_REJECTED",
+            message=f"User rejected execution of plan '{review.title}'.",
+            details={"plan_id": review.plan.plan_id, "approval_id": approval_id},
+        )
+        self._current_tool_results.append(tool_res)
+
+        self.history.add(
+            item_id=f"{review.turn_id}_plan_exec_{len(self._current_tool_results)}",
+            turn_id=review.turn_id,
+            kind=HistoryKind.TOOL,
+            title=f"Plan: {review.title} [Rejected]",
+            status="REJECTED",
+            summary=f"User rejected plan '{review.title}'.",
+            detail=f"Plan '{review.title}' was rejected by user.\nApproval ID: {approval_id}",
+        )
+        self.event_queue.put(ToolResultReadyEvent(tool_result=tool_res, turn_id=review.turn_id))
+
+        # 4. State must be AgentState.PROCESSING
         self.state_machine.transition_to(AgentState.PROCESSING)
+
+        # 5. Build context via ContextBuilder and submit task to worker
+        context = None
+        if hasattr(self.provider, "stream_chat"):
+            tools = self.dispatcher.registry.list()
+            try:
+                context = ContextBuilder.build(
+                    conversation=self.conversation,
+                    tools=tools,
+                    image_resolver=self._resolve_image_bytes,
+                )
+            except ImageResolutionError as exc:
+                self.state_machine.transition_to(AgentState.ERROR)
+                if self._current_metrics:
+                    self._current_metrics.t_completed = time.time()
+                self.history.add(
+                    item_id=f"{review.turn_id}_error",
+                    turn_id=review.turn_id,
+                    kind=HistoryKind.ERROR,
+                    title="Error: IMAGE_NOT_FOUND",
+                    status="ERROR",
+                    summary=str(exc),
+                    detail=f"ImageResolutionError: {exc}\nImage ID: {exc.image_id}",
+                )
+                err_res = AgentResult(
+                    final_text=f"Error (IMAGE_NOT_FOUND): {exc}",
+                    tool_results=list(self._current_tool_results),
+                    state=AgentState.ERROR.value,
+                )
+                self._last_result = err_res
+                self.event_queue.put(
+                    AgentErrorEvent(
+                        error_type="IMAGE_NOT_FOUND",
+                        message=str(exc),
+                        turn_id=review.turn_id,
+                        details={"image_id": exc.image_id},
+                    )
+                )
+                self._current_turn_id = None
+                return err_res
+
+        self.worker.submit_task(
+            turn_id=review.turn_id,
+            prompt=self._current_prompt,
+            tool_results=list(self._current_tool_results),
+            cancel_event=self._current_cancel_event,
+            context=context,
+        )
         return None
 
     def verify_visual(
@@ -866,7 +1065,7 @@ class AgentRuntime:
                 if tool_call.tool_name == "propose_plan":
                     args = dict(tool_call.arguments or {})
                     args.pop("overall_risk", None)
-                    review = self.request_plan_review(args)
+                    review = self.request_plan_review(args, call_id=tool_call.call_id)
                     if review is None:
                         self.state_machine.transition_to(AgentState.ERROR)
                         return None

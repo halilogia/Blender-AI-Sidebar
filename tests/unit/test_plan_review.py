@@ -158,6 +158,114 @@ class TestPlanReview(unittest.TestCase):
         self.assertEqual(len(h["steps_shown"]), 2)
         self.assertEqual(h["hidden_count"], 1)
 
+    def test_plan_review_call_id_field(self):
+        rv, _ = build_plan_review(_plan(), self._reg(), "turn_1", call_id="call_meta_123")
+        self.assertIsNotNone(rv)
+        self.assertEqual(rv.call_id, "call_meta_123")
+        self.assertEqual(rv.to_dict()["call_id"], "call_meta_123")
+        self.assertEqual(rv.hud_summary()["call_id"], "call_meta_123")
+
+    def test_approve_plan_feedback_loop(self):
+        import json
+        from agent.models import Role
+        from agent.state_machine import AgentState
+        from agent.policy import NoPendingApprovalError, InvalidApprovalError
+
+        rt, ad = _runtime()
+        mock_worker = MagicMock()
+        rt.worker = mock_worker
+        _submit_plan(rt)  # uses call_id="c1"
+        self.assertEqual(rt.pending_plan_review.call_id, "c1")
+        aid = rt.pending_plan_review.approval_id
+
+        summary = rt.approve_plan(aid)
+        self.assertIsNotNone(summary)
+
+        # 1. Verify TOOL message appended with correct tool_call_id and name
+        last_msg = rt.conversation.last()
+        self.assertIsNotNone(last_msg)
+        self.assertEqual(last_msg.role, Role.TOOL)
+        self.assertEqual(last_msg.tool_call_id, "c1")
+        self.assertEqual(last_msg.name, "propose_plan")
+
+        # 2. Verify execution summary enters conversation as JSON
+        summary_payload = json.loads(last_msg.content)
+        self.assertEqual(summary_payload["status"], "COMPLETED")
+        self.assertEqual(summary_payload["steps_total"], 3)
+        self.assertEqual(summary_payload["steps_completed"], 3)
+
+        # 3. Verify worker is submitted
+        mock_worker.submit_task.assert_called_once()
+        self.assertEqual(rt.current_state, AgentState.PROCESSING)
+
+        # 4. Verify conversation.validate_sequence() succeeds
+        rt.conversation.validate_sequence()
+
+        # 5. Verify same approval cannot be reused
+        with self.assertRaises((NoPendingApprovalError, InvalidApprovalError)):
+            rt.approve_plan(aid)
+
+    def test_reject_plan_feedback_loop(self):
+        import json
+        from agent.models import Role
+        from agent.state_machine import AgentState
+        from agent.policy import NoPendingApprovalError, InvalidApprovalError
+
+        rt, ad = _runtime()
+        mock_worker = MagicMock()
+        rt.worker = mock_worker
+        _submit_plan(rt)  # uses call_id="c1"
+        self.assertEqual(rt.pending_plan_review.call_id, "c1")
+        aid = rt.pending_plan_review.approval_id
+
+        rt.reject_plan(aid)
+        ad.create_primitive.assert_not_called()
+
+        # 1. Verify TOOL message appended with USER_REJECTED
+        last_msg = rt.conversation.last()
+        self.assertIsNotNone(last_msg)
+        self.assertEqual(last_msg.role, Role.TOOL)
+        self.assertEqual(last_msg.tool_call_id, "c1")
+        self.assertEqual(last_msg.name, "propose_plan")
+
+        # 2. Verify controlled JSON carries USER_REJECTED
+        rej_payload = json.loads(last_msg.content)
+        self.assertEqual(rej_payload["status"], "USER_REJECTED")
+        self.assertIn("USER_REJECTED", last_msg.content)
+
+        # 3. Verify worker is submitted
+        mock_worker.submit_task.assert_called_once()
+        self.assertEqual(rt.current_state, AgentState.PROCESSING)
+
+        # 4. Verify conversation.validate_sequence() succeeds
+        rt.conversation.validate_sequence()
+
+        # 5. Verify same approval cannot be reused
+        with self.assertRaises((NoPendingApprovalError, InvalidApprovalError)):
+            rt.reject_plan(aid)
+
+    def test_reject_plan_wrong_id_and_stale(self):
+        from agent.policy import InvalidApprovalError, NoPendingApprovalError
+
+        rt, _ = _runtime()
+        _submit_plan(rt)
+        with self.assertRaises(InvalidApprovalError):
+            rt.reject_plan("wrong_approval_id")
+
+        # Cancelled turn
+        aid = rt.pending_plan_review.approval_id
+        rt.cancel_current_turn()
+        with self.assertRaises((NoPendingApprovalError, InvalidApprovalError)):
+            rt.reject_plan(aid)
+
+        # Stale turn
+        rt2, _ = _runtime()
+        _submit_plan(rt2)
+        aid2 = rt2.pending_plan_review.approval_id
+        rt2._current_turn_id = "turn_different"
+        with self.assertRaises(InvalidApprovalError):
+            rt2.reject_plan(aid2)
+
 
 if __name__ == "__main__":
     unittest.main()

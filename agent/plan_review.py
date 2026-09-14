@@ -38,11 +38,13 @@ class PlanReview:
     steps: Tuple[PlanReviewStep, ...] = ()
     overall_risk: RiskLevel = RiskLevel.LOW
     created_at: float = 0.0
+    call_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "kind": "plan",
             "approval_id": self.approval_id,
+            "call_id": self.call_id,
             "turn_id": self.turn_id,
             "plan_id": self.plan.plan_id,
             "title": self.title,
@@ -65,6 +67,7 @@ class PlanReview:
         return {
             "kind": "plan",
             "approval_id": self.approval_id,
+            "call_id": self.call_id,
             "title": self.title,
             "description": f"Plan '{self.title}' ({self.steps_total} steps)",
             "steps_total": self.steps_total,
@@ -81,6 +84,7 @@ def build_plan_review(
     registry: ToolRegistry,
     turn_id: str,
     policy: Optional[ApprovalPolicy] = None,
+    call_id: str = "",
 ) -> Tuple[Optional[PlanReview], str]:
     validator = PlanValidator(registry)
     result = validator.validate(raw_plan)
@@ -115,5 +119,6 @@ def build_plan_review(
         steps=tuple(review_steps),
         overall_risk=overall,
         created_at=time.time(),
+        call_id=call_id,
     )
     return review, ""
