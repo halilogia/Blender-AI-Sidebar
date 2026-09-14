@@ -2,7 +2,7 @@
 
 This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
-**CURRENT STATUS: M8 — Context Compaction & Rolling Memory (COMPLETED)**
+**CURRENT STATUS: M9 — Advanced Agentic Blender Operations (COMPLETED)**
 
 ---
 
@@ -20,7 +20,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M7** | **Vision / Screenshot Grounding** | Viewport screenshot capture, multimodal vision provider, visual verification | **COMPLETED** | 365 pure Python tests, 17 Blender suites |
 | **M4.2** | **High-Level Plan Review** | Structured immutable plans, PlanValidator, propose_plan, PlanExecutor, batch approval | **COMPLETED** | 517 pure Python tests |
 | **M8** | **Context Compaction & Rolling Memory** | Rolling memory, selective pruning, .blend session persistence + sanitization | **COMPLETED** | 419 pure Python tests, 18 Blender suites |
-| **M9** | **Advanced Agentic Blender Operations** | Semantic tools, scene construction, inspect-plan-execute-verify-repair loop | *PLANNED* | M9 Milestone |
+| **M9** | **Advanced Agentic Blender Operations** | Semantic tools (camera, light, modifiers, shading, duplicate), agentic repair loop, E2E acceptance | **COMPLETED** | 603 pure Python tests, 23 Blender suites |
 
 ---
 
@@ -188,12 +188,38 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 
 ---
 
+### Milestone 9: Advanced Agentic Blender Operations (v0.9.0)
+- [x] **M9 Task 1: Turn-Level Repair Budget & Loop Termination Guard**:
+  - `_current_plan_repairs` turn-level counter and `max_plan_repairs = 1` guard in `AgentRuntime`.
+  - Terminates infinite LLM repair loops with deterministic `MAX_PLAN_REPAIRS_EXCEEDED` error.
+- [x] **M9 Task 2: Agentic Prompt Protocol & Failure Context Grounding**:
+  - System prompt protocol instructing the model on structured loop: inspect -> propose_plan -> approval -> PlanExecutor -> verify -> feedback -> repair.
+- [x] **M9 Task 3: Camera Semantic Tool (`create_camera`)**:
+  - Data API camera creation/modification: position, Euler rotation, focal length (lens), active camera binding.
+  - Undo integration and deterministic `ChangeVerifier` rule.
+- [x] **M9 Task 4: Light Semantic Tool (`create_light`)**:
+  - Data API light creation/modification: `POINT`, `SUN`, `SPOT`, `AREA` types, transform, energy, color.
+  - Undo integration and deterministic `ChangeVerifier` rule.
+- [x] **M9 Task 5: Core Geometry Quality (`set_shading` & `add_modifier`)**:
+  - `set_shading`: `SMOOTH` / `FLAT` polygon shading directly via Data API.
+  - `add_modifier`: `BEVEL` (width, segments), `SUBSURF` (levels), and `BOOLEAN` (DIFFERENCE, UNION) modifiers via Data API.
+  - Target object validation, parameter clamping, undo integration, and deterministic `ChangeVerifier` rules.
+- [x] **M9 Task 6: Object Duplication (`duplicate_object`)**:
+  - Safe Data API cloning of objects and independent data datablocks with material slot preservation.
+  - Deterministic name collision prevention (fail-closed if provided name exists, `{source}_copy_{n}` if omitted).
+  - Optional transform application, source immutability, undo integration, and deterministic `ChangeVerifier` rule.
+- [x] **M9 Task 7: End-to-End Agentic Blender Acceptance**:
+  - Headless Blender integration test proving full multi-round agentic loop on real scene: prompt -> inspect -> plan -> approval -> execution -> verification -> final response.
+  - Live Blender verification of mesh geometry, modifier state, shading, material BSDF, active camera, and light.
+  - Verified plan repair loop without duplicate mutations.
+  - 603 pure Python unit tests and 23/23 headless Blender integration test suites passing.
+
+---
+
 ## Planned Future Milestones
 
-### Milestone 9: Advanced Agentic Blender Operations
-- [ ] Stronger semantic Blender tools.
-- [ ] Camera / light / collection / modifier / mesh operation coverage.
-- [ ] Multi-step scene construction capabilities.
-- [ ] Agent loop: inspect → plan → execute → verify → repair.
-- [ ] Real Blender end-to-end validation.
+### Milestone 10: Production Hardening & Community Release
+- [ ] Distribution packaging & Blender Extensions platform submission.
+- [ ] Performance profiling and memory optimization under heavy scene loads.
+- [ ] Extended documentation, video tutorials, and interactive onboarder.
 

@@ -151,6 +151,7 @@ Blender AI Copilot is designed around seven non-negotiable principles:
 - **`AgentRuntime`**: Owns session state, turn lifecycle, active turn cancellation tokens, and the canonical `Conversation`. Enforces:
   - **Stale Event Protection**: Rejects events whose `turn_id` does not match the active `_current_turn_id`.
   - **Loop Guard**: `max_tool_rounds` (default: 5) prevents infinite LLM-tool ping-pong loops.
+  - **Repair Budget Guard (M9)**: `_current_plan_repairs` counter and `max_plan_repairs` (default: 1) strictly prevent infinite LLM plan repair iterations with `MAX_PLAN_REPAIRS_EXCEEDED`.
   - **Cancellation Hygiene**: Immediate abort of pending tools, invalidation of pending approvals, and discarding of late-arriving provider completions.
   - **Closed-Loop Verification Hook**: Integrates `_execute_and_verify` to intercept every mutation and validate actual Blender RNA state against expected parameters.
 
@@ -199,6 +200,11 @@ Plan Execution Summary
 - **`create_primitive`**: Spawns `CUBE`, `SPHERE`, or `PLANE` via Blender Data API with deterministic naming and placement.
 - **`transform_object`**: Applies translation, rotation, and scaling coordinates to existing objects in absolute or relative coordinates.
 - **`delete_object`**: Unlinks objects from all scenes and collections and purges their datablocks safely.
+- **`create_camera` (M9)**: Creates or modifies camera objects and datablocks via Data API with location, rotation, lens (focal length), and active camera binding.
+- **`create_light` (M9)**: Creates or modifies light objects and datablocks via Data API (`POINT`, `SUN`, `SPOT`, `AREA`) with location, rotation, energy, and color.
+- **`set_shading` (M9)**: Sets `SMOOTH` or `FLAT` polygon shading directly on mesh datablocks via Data API without operator dependencies.
+- **`add_modifier` (M9)**: Adds and configures `BEVEL` (width, segments), `SUBSURF` (levels), and `BOOLEAN` (DIFFERENCE, UNION, target object) modifiers via Data API with target existence validation.
+- **`duplicate_object` (M9)**: Clones existing objects and creates independent data datablocks via Data API while preserving material slots. Features deterministic name collision prevention (fail-closed if provided name exists, `{source}_copy_{n}` if omitted) and optional transform application.
 - **`set_material` (M6)**: Mutates Principled BSDF shader socket properties (`base_color`, `metallic`, `roughness`, `emission_color`, `emission_strength`, `alpha`). Automatically normalizes 3-element RGB to 4-element RGBA and clamps inputs outside [0, 1].
 - **`assign_material` (M6)**: Binds an existing or newly created material to an object's material slot. Features automatic slot expansion when targeting higher slot indices.
 - **`push_undo_step(description)`**: Invokes `bpy.ops.ed.undo_push()` after every successful mutation, integrating seamlessly into Blender's history.
@@ -220,7 +226,7 @@ Plan Execution Summary
 ### 3.6. Deterministic Mutation Verification Subsystem (`core/change_set.py`, `agent/verifier.py`)
 - **Decoupled Pure Python Engine**: The verification engine has **zero `bpy` imports** and runs identically in unit tests and live Blender sessions.
 - **`ChangeSet` Data Container**:
-  - `operation`: Action name (`create`, `transform`, `delete`, `set_material`, `assign_material`).
+  - `operation`: Action name (`create`, `create_camera`, `create_light`, `set_shading`, `add_modifier`, `duplicate_object`, `transform`, `delete`, `set_material`, `assign_material`).
   - `target_name`: Target object or material identifier.
   - `before`: Snapshot prior to mutation (captured by reader/mutator).
   - `expected_after`: Expected state derived directly from tool call parameters via `build_change_set_from_result`.

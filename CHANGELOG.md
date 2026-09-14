@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-09-14
+
+### Added
+- **M9: Advanced Agentic Blender Operations**:
+  - **Turn-Level Repair Budget Guard**: `_current_plan_repairs` counter and `max_plan_repairs = 1` guard terminating infinite LLM repair iterations with `MAX_PLAN_REPAIRS_EXCEEDED`.
+  - **Agentic Prompt Protocol**: Updated `ContextBuilder` system instructions to guide model reasoning on inspect -> propose_plan -> approval -> PlanExecutor -> verify -> feedback -> repair.
+  - **Camera Semantic Tool (`create_camera`)**: Safe Data API camera creation and manipulation (location, rotation, lens focal length, active scene camera assignment, undo integration, and deterministic `ChangeVerifier` rule).
+  - **Light Semantic Tool (`create_light`)**: Safe Data API lighting tool supporting `POINT`, `SUN`, `SPOT`, and `AREA` light types, location, rotation, energy wattage, color tint, undo integration, and deterministic `ChangeVerifier` rule.
+  - **Core Geometry Quality (`set_shading` & `add_modifier`)**:
+    - `set_shading`: Direct polygon-level `SMOOTH` and `FLAT` shading via Data API without operator context dependencies.
+    - `add_modifier`: Data API geometry modifiers supporting `BEVEL` (width, segments), `SUBSURF` (levels), and `BOOLEAN` (DIFFERENCE, UNION, target object existence checks).
+  - **Object Duplication Tool (`duplicate_object`)**:
+    - Data API object and independent datablock cloning with material slot preservation.
+    - Deterministic fail-closed name collision handling (fails if specified name already exists, `{source}_copy_{n}` if omitted).
+    - Source object immutability, optional transform application, undo integration, and deterministic `ChangeVerifier` rule.
+  - **End-to-End Agentic Acceptance Suite**:
+    - Headless Blender integration test proving full multi-round agentic loop on real scene: prompt -> inspect -> plan -> approval -> execution -> verification -> final response.
+    - Live Blender verification of mesh geometry, modifier state, shading, material BSDF, active camera, and light.
+    - Verified plan self-repair loop on step failure without recreating already-successful mutations.
+
+---
+
 ## [Unreleased] - M4.2 High-Level Plan Review
 
 ### Added
