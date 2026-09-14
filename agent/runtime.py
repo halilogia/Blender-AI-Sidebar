@@ -350,7 +350,9 @@ class AgentRuntime:
             self._current_turn_id, self.policy,
             call_id=call_id)
         if review is None:
+            self._last_plan_validation_error = err
             return None
+        self._last_plan_validation_error = None
         self._pending_plan_review = review
         self.state_machine.transition_to(AgentState.PENDING_APPROVAL)
         self.event_queue.put(ApprovalRequiredEvent(
@@ -1154,7 +1156,51 @@ class AgentRuntime:
                     review = self.request_plan_review(args, call_id=tool_call.call_id)
                     if review is None:
                         self.state_machine.transition_to(AgentState.ERROR)
-                        return None
+                        if self._current_metrics:
+                            self._current_metrics.t_completed = time.time()
+                        err_msg = getattr(self, "_last_plan_validation_error", None) or "Plan validation failed: Invalid plan structure."
+                        err_content = json.dumps(
+                            {"error": err_msg, "type": "PLAN_VALIDATION_FAILED"},
+                            ensure_ascii=False,
+                        )
+                        self.conversation.add_message(
+                            ChatMessage(
+                                role=Role.TOOL,
+                                content=err_content,
+                                tool_call_id=tool_call.call_id,
+                                name="propose_plan",
+                            )
+                        )
+                        tool_res = ToolResult.fail(
+                            tool="propose_plan",
+                            error_type="PLAN_VALIDATION_FAILED",
+                            message=err_msg,
+                        )
+                        self._current_tool_results.append(tool_res)
+                        error_result = AgentResult(
+                            final_text=f"Error: {err_msg}",
+                            tool_results=list(self._current_tool_results),
+                            state=AgentState.ERROR.value,
+                        )
+                        self._last_result = error_result
+                        self.history.add(
+                            item_id=f"{event.turn_id}_error",
+                            turn_id=event.turn_id,
+                            kind=HistoryKind.ERROR,
+                            title="Error: PLAN_VALIDATION_FAILED",
+                            status="ERROR",
+                            summary=err_msg,
+                            detail=f"Plan validation failed: {err_msg}",
+                        )
+                        self.event_queue.put(
+                            AgentErrorEvent(
+                                error_type="PLAN_VALIDATION_FAILED",
+                                message=err_msg,
+                                turn_id=event.turn_id,
+                            )
+                        )
+                        self._current_turn_id = None
+                        return error_result
                     return None
 
                 # Policy gate check
