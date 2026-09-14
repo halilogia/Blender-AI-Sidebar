@@ -107,6 +107,21 @@ class AISIDEBAR_OT_clear_history(Operator):
         return {"FINISHED"}
 
 
+class AISIDEBAR_OT_copy_diagnostic_log_path(Operator):
+    """Copy the local diagnostic log path so errors can be inspected quickly."""
+
+    bl_idname = "ai_sidebar.copy_diagnostic_log_path"
+    bl_label = "Copy Diagnostic Log Path"
+    bl_description = "Copy the Blender AI Sidebar diagnostic log path"
+
+    def execute(self, context):
+        from core.logging_utils import get_log_path
+
+        context.window_manager.clipboard = get_log_path()
+        self.report({"INFO"}, "Diagnostic log path copied to clipboard.")
+        return {"FINISHED"}
+
+
 class AISIDEBAR_OT_approve_action(Operator):
     """Approve the active pending tool action."""
 
@@ -206,6 +221,7 @@ CLASSES = (
     AISIDEBAR_OT_send_prompt,
     AISIDEBAR_OT_cancel_turn,
     AISIDEBAR_OT_clear_history,
+    AISIDEBAR_OT_copy_diagnostic_log_path,
     AISIDEBAR_OT_approve_action,
     AISIDEBAR_OT_reject_action,
 )

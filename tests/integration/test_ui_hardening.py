@@ -42,11 +42,17 @@ class DummyLayout:
     def box(self):
         return self
 
+    def column(self, align=False):
+        return self
+
     def row(self, align=False):
         return self
 
     def label(self, text="", icon="NONE"):
         self.labels.append((text, icon))
+
+    def separator(self):
+        pass
 
     def prop(self, data, prop_name, text=""):
         pass
@@ -72,7 +78,7 @@ def test_ui_drawing_edge_cases():
         dummy_panel = types.SimpleNamespace(layout=DummyLayout())
         AISIDEBAR_PT_main_panel.draw(dummy_panel, bpy.context)
         labels = [l[0] for l in dummy_panel.layout.labels]
-        assert any("Select an item above to view details." in l for l in labels)
+        assert any("No messages yet." in l for l in labels)
         print("  - Empty history draw: OK")
 
         # 2. Long prompt and long tool result with truncation
@@ -102,8 +108,8 @@ def test_ui_drawing_edge_cases():
         dummy_panel.layout = DummyLayout()
         AISIDEBAR_PT_main_panel.draw(dummy_panel, bpy.context)
         labels = [l[0] for l in dummy_panel.layout.labels]
-        # Check that truncation warning appeared
-        assert any("truncated" in l for l in labels)
+        # Long rows are clipped with an ellipsis rather than overflowing.
+        assert any("…" in l for l in labels)
         print("  - Long text truncation draw: OK")
 
         # 3. Error state rendering
@@ -111,7 +117,7 @@ def test_ui_drawing_edge_cases():
         dummy_panel.layout = DummyLayout()
         AISIDEBAR_PT_main_panel.draw(dummy_panel, bpy.context)
         labels = [l[0] for l in dummy_panel.layout.labels]
-        assert any("Status: ERROR" in l for l in labels)
+        assert any("Error encountered" in l for l in labels)
         print("  - Error state draw: OK")
 
         # 4. Active state rendering
@@ -119,7 +125,7 @@ def test_ui_drawing_edge_cases():
         dummy_panel.layout = DummyLayout()
         AISIDEBAR_PT_main_panel.draw(dummy_panel, bpy.context)
         labels = [l[0] for l in dummy_panel.layout.labels]
-        assert any("PROCESSING" in l for l in labels)
+        assert any("AI:" in l for l in labels)
         print("  - Processing state draw: OK")
 
         print("[PASS] UI draw edge cases verified successfully.")

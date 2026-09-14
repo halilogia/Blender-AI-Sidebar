@@ -2,6 +2,7 @@
 
 import bpy
 from bpy.types import Panel
+from core.logging_utils import get_log_path
 
 
 class AISIDEBAR_PT_main_panel(Panel):
@@ -82,6 +83,15 @@ class AISIDEBAR_PT_main_panel(Panel):
             approval_row.operator("ai_sidebar.reject_action", text="Reject", icon="X")
         if history:
             conversation_box.operator("ai_sidebar.clear_history", text="Clear Conversation", icon="TRASH")
+
+        diagnostics = layout.box()
+        diagnostics.label(text="Diagnostics", icon="INFO")
+        diagnostics.label(text="Log: " + get_log_path())
+        diagnostics.operator(
+            "ai_sidebar.copy_diagnostic_log_path",
+            text="Copy Log Path",
+            icon="COPYDOWN",
+        )
 
 
 def _clip(value, limit):
