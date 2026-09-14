@@ -31,6 +31,7 @@ from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
 from agent.prompt_queue import PromptQueue, QueuedPrompt
+from agent.runtime_snapshot import RuntimeSnapshot
 from agent.verifier import ChangeVerifier, build_change_set_from_result
 from agent.visual_verifier import (
     VisualResultParser,
@@ -208,6 +209,34 @@ class AgentRuntime:
     def queued_prompts(self) -> List[QueuedPrompt]:
         """Return queued user prompts in FIFO order for UI rendering."""
         return self.prompt_queue.items
+
+    def snapshot(self) -> RuntimeSnapshot:
+        """Return one consistent, UI-neutral view of the current runtime state."""
+        pending = None
+        if self._pending_plan_review is not None:
+            pending = dict(self._pending_plan_review.hud_summary())
+        elif self._pending_approval is not None:
+            pending = {
+                "approval_id": self._pending_approval.approval_id,
+                "description": self._pending_approval.human_readable_description,
+                "risk_level": (
+                    self._pending_approval.risk_level.value
+                    if hasattr(self._pending_approval.risk_level, "value")
+                    else str(self._pending_approval.risk_level)
+                ),
+                "tool_name": self._pending_approval.tool_name,
+            }
+        last_response = self._last_result.final_text if self._last_result else ""
+        return RuntimeSnapshot(
+            state=self.current_state.value,
+            current_turn_id=self._current_turn_id,
+            queued_count=len(self.prompt_queue),
+            streaming_text=self._streaming_text,
+            last_response_text=last_response or "",
+            last_plan_summary=self.last_plan_summary,
+            pending_approval=pending,
+            history=tuple(item.to_dict() for item in self.history.items),
+        )
 
     @property
     def last_result(self) -> Optional[AgentResult]:

@@ -103,23 +103,28 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 from ... import get_runtime
                 runtime = get_runtime()
                 if runtime:
-                    is_proc = runtime.current_state.value in ("PROCESSING", "EXECUTING_TOOL")
+                    snapshot = runtime.snapshot() if hasattr(runtime, "snapshot") else None
+                    runtime_state = snapshot.state if snapshot else runtime.current_state.value
+                    is_proc = runtime_state in ("PROCESSING", "EXECUTING_TOOL")
                     if is_proc != overlay_state.is_processing:
                         overlay_state.is_processing = is_proc
                         state_changed = True
 
-                    overlay_state.status_text = runtime.current_state.value
-                    if runtime.last_result and runtime.last_result.final_text:
-                        if overlay_state.last_response_text != runtime.last_result.final_text:
-                            overlay_state.last_response_text = runtime.last_result.final_text
+                    overlay_state.status_text = runtime_state
+                    last_response = snapshot.last_response_text if snapshot else (
+                        runtime.last_result.final_text if runtime.last_result else ""
+                    )
+                    if last_response:
+                        if overlay_state.last_response_text != last_response:
+                            overlay_state.last_response_text = last_response
                             state_changed = True
 
-                    live_text = getattr(runtime, "streaming_text", "")
+                    live_text = snapshot.streaming_text if snapshot else getattr(runtime, "streaming_text", "")
                     if overlay_state.streaming_response_text != live_text:
                         overlay_state.streaming_response_text = live_text
                         state_changed = True
 
-                    task_plan = getattr(runtime, "last_plan_summary", None)
+                    task_plan = snapshot.last_plan_summary if snapshot else getattr(runtime, "last_plan_summary", None)
                     if overlay_state.task_plan != task_plan:
                         overlay_state.task_plan = task_plan
                         state_changed = True

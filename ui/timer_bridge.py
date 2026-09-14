@@ -115,8 +115,9 @@ class TimerBridge:
                 return
 
             props = wm.ai_sidebar
+            snapshot = self.runtime.snapshot() if hasattr(self.runtime, "snapshot") else None
             state = self.runtime.current_state
-            props.agent_status = state.value
+            props.agent_status = snapshot.state if snapshot else state.value
 
             # 1. Action description
             if state.value == "IDLE":
@@ -132,11 +133,13 @@ class TimerBridge:
                 props.current_action = "Error encountered"
 
             # 2. Last result summary
-            if self.runtime.last_result:
+            if snapshot and snapshot.last_response_text:
+                props.last_result_summary = snapshot.last_response_text[:120]
+            elif self.runtime.last_result:
                 props.last_result_summary = self.runtime.last_result.final_text[:120]
-            props.live_streaming_text = getattr(self.runtime, "streaming_text", "")
+            props.live_streaming_text = snapshot.streaming_text if snapshot else getattr(self.runtime, "streaming_text", "")
             if hasattr(props, "queued_count"):
-                props.queued_count = len(getattr(self.runtime, "queued_prompts", []))
+                props.queued_count = snapshot.queued_count if snapshot else len(getattr(self.runtime, "queued_prompts", []))
 
             # 3. Synchronize history items from RuntimeHistory to UIList collection
             if hasattr(self.runtime, "history"):
