@@ -200,6 +200,50 @@ class TestContextBuilder(unittest.TestCase):
         reconstructed = ProviderRequestContext.from_dict(json.loads(json_str))
         self.assertEqual(ctx1, reconstructed)
 
+    def test_agentic_prompt_protocol_presence_and_grounding(self):
+        """Verify agentic workflow protocol and inspection grounding rules are present."""
+        prompt = DEFAULT_SYSTEM_PROMPT
+        self.assertIn("AGENTIC WORKFLOW PROTOCOL", prompt)
+        self.assertIn("propose_plan", prompt)
+        # Grounding tools
+        for tool in ["inspect_scene", "inspect_selection", "inspect_object", "inspect_material", "inspect_mesh", "capture_viewport"]:
+            self.assertIn(tool, prompt)
+        # Simple vs multi-step
+        self.assertIn("Simple vs Multi-Step Tasks", prompt)
+        self.assertIn("Grounding & Inspection First", prompt)
+        # capture_viewport as supporting grounding
+        self.assertIn("supporting grounding", prompt)
+
+    def test_agentic_prompt_protocol_completed_and_duplicate_prevention(self):
+        """Verify COMPLETED status handling and prohibition of duplicate mutations."""
+        prompt = DEFAULT_SYSTEM_PROMPT
+        self.assertIn("COMPLETED", prompt)
+        self.assertIn("Do not duplicate or re-run any step", prompt)
+
+    def test_agentic_prompt_protocol_failure_verification_and_repair(self):
+        """Verify FAILED status, verification mismatch inspection, and targeted repair rules."""
+        prompt = DEFAULT_SYSTEM_PROMPT
+        self.assertIn("FAILED", prompt)
+        self.assertIn("expected", prompt)
+        self.assertIn("actual", prompt)
+        self.assertIn("mismatches", prompt)
+        self.assertIn("Do not rebuild the entire scene from scratch", prompt)
+        self.assertIn("repair plan also requires user approval", prompt)
+
+    def test_agentic_prompt_protocol_rejection_and_loop_termination(self):
+        """Verify USER_REJECTED handling and loop termination guard rules."""
+        prompt = DEFAULT_SYSTEM_PROMPT
+        self.assertIn("USER_REJECTED", prompt)
+        self.assertIn("MAX_PLAN_REPAIRS_EXCEEDED", prompt)
+        self.assertIn("MAX_TOOL_ROUNDS_EXCEEDED", prompt)
+        self.assertIn("do not force further retries", prompt)
+
+    def test_agentic_prompt_budget_within_bounds(self):
+        """Verify system prompt size leaves ample budget within MAX_CONTEXT_CHARS."""
+        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), MAX_CONTEXT_CHARS // 3)
+        self.assertGreater(len(DEFAULT_SYSTEM_PROMPT), 500)
+
 
 if __name__ == "__main__":
     unittest.main()
+
