@@ -28,6 +28,7 @@ from adapter.mutators import (
     LightMutator,
     ShadingMutator,
     ModifierMutator,
+    DuplicateMutator,
     TransformMutator,
     DeleteMutator,
     MaterialMutator,
@@ -517,6 +518,53 @@ class BlenderAdapter:
                 tool=tool_name,
                 error_type="ADAPTER_INTERNAL_ERROR",
                 message=f"Unexpected error deleting object '{name}': {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
+    def duplicate_object(
+        self,
+        source_name: str,
+        new_name: Optional[str] = None,
+        location: Optional[Any] = None,
+        rotation: Optional[Any] = None,
+        scale: Optional[Any] = None,
+    ) -> ToolResult:
+        """Safely duplicate an existing object with independent data and optional transforms.
+
+        Returns:
+            ToolResult conforming to duplicate_object contract.
+        """
+        assert_main_thread()
+        tool_name = "duplicate_object"
+
+        try:
+            data = DuplicateMutator.duplicate(
+                source_name=source_name,
+                new_name=new_name,
+                location=location,
+                rotation=rotation,
+                scale=scale,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ObjectNotFoundError as not_found:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="OBJECT_NOT_FOUND",
+                message=str(not_found),
+                details={"source_name": source_name},
+            )
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"source_name": source_name, "error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error duplicating object '{source_name}': {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
 

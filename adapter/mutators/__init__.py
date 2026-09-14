@@ -8,6 +8,7 @@ from .delete_mutator import DeleteMutator
 from .material_mutator import MaterialMutator
 from .shading_mutator import ShadingMutator
 from .modifier_mutator import ModifierMutator
+from .duplicate_mutator import DuplicateMutator
 from .undo_manager import push_undo_step, perform_undo, perform_redo
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "MaterialMutator",
     "ShadingMutator",
     "ModifierMutator",
+    "DuplicateMutator",
     "push_undo_step",
     "perform_undo",
     "perform_redo",

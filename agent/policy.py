@@ -154,6 +154,15 @@ class ApprovalPolicy:
             obj_name = args.get("name", "").strip()
             return f'Transform "{obj_name}"' if obj_name else "Transform object"
 
+        if tool_name == "duplicate_object":
+            src = args.get("source_name", "").strip()
+            dst = args.get("new_name", "").strip()
+            if src and dst:
+                return f'Duplicate "{src}" as "{dst}"'
+            elif src:
+                return f'Duplicate "{src}"'
+            return "Duplicate object"
+
         if tool_name == "propose_plan":
             title = args.get("title", "").strip()
             return f'Propose plan "{title}"' if title else "Propose plan"

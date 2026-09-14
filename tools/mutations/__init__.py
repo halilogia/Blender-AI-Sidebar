@@ -5,6 +5,7 @@ from .create_camera import CreateCameraTool
 from .create_light import CreateLightTool
 from .set_shading import SetShadingTool
 from .add_modifier import AddModifierTool
+from .duplicate_object import DuplicateObjectTool
 from .transform_object import TransformObjectTool
 from .delete_object import DeleteObjectTool
 from .set_material import SetMaterialTool
@@ -16,6 +17,7 @@ __all__ = [
     "CreateLightTool",
     "SetShadingTool",
     "AddModifierTool",
+    "DuplicateObjectTool",
     "TransformObjectTool",
     "DeleteObjectTool",
     "SetMaterialTool",

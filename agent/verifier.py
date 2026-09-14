@@ -58,6 +58,8 @@ class ChangeVerifier:
             return self._verify_set_material(target, change_set)
         elif op in ("assign_material", "assign"):
             return self._verify_assign_material(target, change_set)
+        elif op in ("duplicate_object", "duplicate"):
+            return self._verify_duplicate_object(target, change_set)
         else:
             return VerificationResult(
                 status=VerificationStatus.FAIL,
@@ -66,7 +68,7 @@ class ChangeVerifier:
                 mismatches=[
                     {
                         "property": "operation",
-                        "expected": "One of ['create', 'create_camera', 'create_light', 'set_shading', 'add_modifier', 'transform', 'delete', 'set_material', 'assign_material']",
+                        "expected": "One of ['create', 'create_camera', 'create_light', 'set_shading', 'add_modifier', 'duplicate_object', 'transform', 'delete', 'set_material', 'assign_material']",
                         "actual": op,
                         "diff": None,
                     }
@@ -524,6 +526,134 @@ class ChangeVerifier:
                     )
 
         return self._build_result("add_modifier", target, mismatches)
+
+    def _verify_duplicate_object(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for object duplication."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+        before = change_set.before or {}
+
+        # 1. Source preservation check
+        if not actual.get("source_exists", False):
+            mismatches.append(
+                {
+                    "property": "source_exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+
+        if not actual.get("source_preserved", True):
+            mismatches.append(
+                {
+                    "property": "source_preserved",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+
+        if before:
+            for vec_prop in ("location", "rotation", "scale"):
+                src_key = f"source_{vec_prop}"
+                if src_key in actual and vec_prop in before:
+                    mismatch = self._compare_numeric_vector(
+                        src_key,
+                        before[vec_prop],
+                        actual[src_key],
+                        is_rotation=(vec_prop == "rotation"),
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+        # 2. New object exists check
+        if not actual.get("new_exists", False) and not actual.get("exists", True):
+            mismatches.append(
+                {
+                    "property": "new_exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+            return self._build_result("duplicate_object", target, mismatches)
+
+        # 3. New object name check
+        if "new_name" in expected and expected["new_name"]:
+            exp_name = str(expected["new_name"]).strip()
+            act_name = str(actual.get("new_name", "")).strip()
+            if exp_name != act_name:
+                mismatches.append(
+                    {
+                        "property": "new_name",
+                        "expected": exp_name,
+                        "actual": act_name,
+                        "diff": None,
+                    }
+                )
+
+        # 4. New object type check
+        if "type" in expected and expected["type"]:
+            exp_type = str(expected["type"]).upper()
+            act_type = str(actual.get("type", "")).upper()
+            if exp_type != act_type:
+                mismatches.append(
+                    {
+                        "property": "type",
+                        "expected": exp_type,
+                        "actual": act_type,
+                        "diff": None,
+                    }
+                )
+
+        # 5. Transforms (location, rotation, scale)
+        for prop in ("location", "rotation", "scale"):
+            if prop in expected and expected[prop] is not None:
+                if prop not in actual or actual[prop] is None:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": expected[prop],
+                            "actual": None,
+                            "diff": None,
+                        }
+                    )
+                else:
+                    mismatch = self._compare_numeric_vector(
+                        prop,
+                        expected[prop],
+                        actual[prop],
+                        is_rotation=(prop == "rotation"),
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+        # 6. Distinct object identity check
+        if not actual.get("distinct_identity", False):
+            mismatches.append(
+                {
+                    "property": "distinct_identity",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+
+        src_name = actual.get("source_name") or expected.get("source_name")
+        act_new_name = actual.get("new_name")
+        if src_name and act_new_name and src_name == act_new_name:
+            mismatches.append(
+                {
+                    "property": "identity_name_distinct",
+                    "expected": f"!= {src_name}",
+                    "actual": act_new_name,
+                    "diff": None,
+                }
+            )
+
+        return self._build_result("duplicate_object", target, mismatches)
 
     def _verify_transform(self, target: str, change_set: ChangeSet) -> VerificationResult:
         """Verification rules for object transformation."""
@@ -1100,6 +1230,33 @@ def build_change_set_from_result(
         return ChangeSet(
             operation="assign_material",
             target_name=target_name,
+            before=result_data.get("before"),
+            expected_after=expected_after,
+            actual_after=dict(actual_snap) if isinstance(actual_snap, dict) else {},
+        )
+
+    elif name == "duplicate_object":
+        source_name = str(arguments.get("source_name") or result_data.get("source_name") or "")
+        new_name = str(result_data.get("new_name") or arguments.get("new_name") or f"{source_name}_copy")
+        expected_after: Dict[str, Any] = {
+            "source_name": source_name,
+            "source_exists": True,
+            "new_exists": True,
+            "distinct_identity": True,
+        }
+        if arguments.get("new_name"):
+            expected_after["new_name"] = arguments["new_name"]
+        if "type" in result_data:
+            expected_after["type"] = result_data["type"]
+
+        for prop in ("location", "rotation", "scale"):
+            if prop in arguments and arguments[prop] is not None:
+                expected_after[prop] = arguments[prop]
+
+        actual_snap = result_data.get("actual") or result_data
+        return ChangeSet(
+            operation="duplicate_object",
+            target_name=new_name,
             before=result_data.get("before"),
             expected_after=expected_after,
             actual_after=dict(actual_snap) if isinstance(actual_snap, dict) else {},
