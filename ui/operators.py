@@ -2,6 +2,10 @@
 
 import bpy
 from bpy.types import Operator
+from core.logging_utils import get_logger
+
+
+_logger = get_logger("operators")
 
 
 class AISIDEBAR_OT_send_prompt(Operator):
@@ -38,8 +42,15 @@ class AISIDEBAR_OT_send_prompt(Operator):
         props.agent_status = "PROCESSING"
         props.current_action = "Thinking..."
 
-        runtime.submit_prompt(prompt)
-        return {"FINISHED"}
+        try:
+            runtime.submit_prompt(prompt)
+            return {"FINISHED"}
+        except Exception as exc:
+            _logger.exception("Sidebar prompt submission failed")
+            props.agent_status = "ERROR"
+            props.current_action = "Error encountered"
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
 
 class AISIDEBAR_OT_cancel_turn(Operator):
@@ -59,7 +70,12 @@ class AISIDEBAR_OT_cancel_turn(Operator):
 
         runtime = get_runtime()
         if runtime is not None:
-            runtime.cancel_current_turn()
+            try:
+                runtime.cancel_current_turn()
+            except Exception as exc:
+                _logger.exception("Sidebar turn cancellation failed")
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
         props = getattr(context.window_manager, "ai_sidebar", None)
         if props:
             props.agent_status = "IDLE"
@@ -133,6 +149,7 @@ class AISIDEBAR_OT_approve_action(Operator):
                 runtime.approve(target_id)
             return {"FINISHED"}
         except Exception as exc:
+            _logger.exception("Sidebar approval failed for %s", target_id)
             self.report({"ERROR"}, f"Approval failed: {str(exc)}")
             return {"CANCELLED"}
 
@@ -180,6 +197,7 @@ class AISIDEBAR_OT_reject_action(Operator):
                 runtime.reject(target_id)
             return {"FINISHED"}
         except Exception as exc:
+            _logger.exception("Sidebar rejection failed for %s", target_id)
             self.report({"ERROR"}, f"Rejection failed: {str(exc)}")
             return {"CANCELLED"}
 

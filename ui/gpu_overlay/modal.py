@@ -5,8 +5,10 @@ from bpy.types import Operator
 
 from .state import overlay_state
 from .renderer import draw_overlay_hud
+from core.logging_utils import get_logger
 
 _active_modal_operator = None
+_logger = get_logger("gpu_overlay")
 
 
 class AISIDEBAR_OT_viewport_hud(Operator):
@@ -83,7 +85,7 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                     if a.type == "VIEW_3D":
                         a.tag_redraw()
         except Exception:
-            pass
+            _logger.exception("HUD redraw failed")
 
     def modal(self, context, event):
         if not overlay_state.is_open:
@@ -112,12 +114,18 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                             overlay_state.last_response_text = runtime.last_result.final_text
                             state_changed = True
 
+                    live_text = getattr(runtime, "streaming_text", "")
+                    if overlay_state.streaming_response_text != live_text:
+                        overlay_state.streaming_response_text = live_text
+                        state_changed = True
+
                     # Sync pending approval (plan review takes precedence as batch card)
                     plan_review = getattr(runtime, "pending_plan_review", None)
                     if plan_review is not None:
                         try:
                             appr_dict = plan_review.hud_summary()
                         except Exception:
+                            _logger.exception("Plan review HUD serialization failed")
                             appr_dict = {
                                 "kind": "plan",
                                 "approval_id": plan_review.approval_id,
@@ -145,7 +153,10 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                             overlay_state.pending_approval = None
                             state_changed = True
             except Exception:
-                pass
+                _logger.exception("HUD timer synchronization failed")
+                overlay_state.status_text = "ERROR"
+                overlay_state.is_processing = False
+                state_changed = True
 
             if state_changed:
                 self.tag_redraw_view3d(context)
@@ -189,6 +200,13 @@ class AISIDEBAR_OT_viewport_hud(Operator):
             elif hit == "cancel":
                 self.cancel_current_turn()
                 self.tag_redraw_view3d(context)
+                return {"RUNNING_MODAL"}
+            elif hit == "copy_response":
+                response = overlay_state.streaming_response_text or overlay_state.last_response_text
+                if response:
+                    context.window_manager.clipboard = response
+                    overlay_state.status_text = "COPIED"
+                    self.tag_redraw_view3d(context)
                 return {"RUNNING_MODAL"}
             elif hit in ("input", "bar", "approval_card"):
                 # Focus prompt
@@ -310,9 +328,13 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 overlay_state.is_processing = True
                 overlay_state.status_text = "PROCESSING"
                 overlay_state.last_response_text = ""
+                overlay_state.streaming_response_text = ""
                 runtime.submit_prompt(prompt)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.exception("HUD prompt submission failed")
+            overlay_state.is_processing = False
+            overlay_state.status_text = "ERROR"
+            overlay_state.last_response_text = f"Error: {exc}"
 
     def cancel_current_turn(self):
         """Cancel active agent operation."""
@@ -324,8 +346,11 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 overlay_state.pending_approval = None
                 overlay_state.is_processing = False
                 overlay_state.status_text = "IDLE"
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.exception("HUD turn cancellation failed")
+            overlay_state.is_processing = False
+            overlay_state.status_text = "ERROR"
+            overlay_state.last_response_text = f"Cancel failed: {exc}"
 
     def approve_pending_action(self, approval_id: str):
         """Approve the pending action on the active agent runtime."""
@@ -341,8 +366,10 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 else:
                     runtime.approve(approval_id)
                 overlay_state.pending_approval = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.exception("HUD approval failed for %s", approval_id)
+            overlay_state.status_text = "ERROR"
+            overlay_state.last_response_text = f"Approval failed: {exc}"
 
     def reject_pending_action(self, approval_id: str):
         """Reject the pending action on the active agent runtime."""
@@ -358,8 +385,10 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 else:
                     runtime.reject(approval_id)
                 overlay_state.pending_approval = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.exception("HUD rejection failed for %s", approval_id)
+            overlay_state.status_text = "ERROR"
+            overlay_state.last_response_text = f"Rejection failed: {exc}"
 
 
 CLASSES = (

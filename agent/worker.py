@@ -24,6 +24,10 @@ from agent.models import (
     TextDelta,
     ToolCallDelta,
 )
+from core.logging_utils import get_logger
+
+
+_logger = get_logger("worker")
 from agent.provider import BaseProvider
 
 
@@ -203,6 +207,7 @@ class AgentWorker:
 
             except Exception as exc:
                 # 5. Isolate worker exceptions — never crash Blender UI
+                _logger.exception("Background worker failed for turn %s", task.turn_id)
                 self.event_queue.put(
                     AgentErrorEvent(
                         error_type="WORKER_EXCEPTION",

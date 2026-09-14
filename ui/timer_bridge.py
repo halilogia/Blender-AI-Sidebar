@@ -9,6 +9,10 @@ import bpy
 
 from core.event_queue import ThreadSafeEventQueue
 from agent.runtime import AgentRuntime
+from core.logging_utils import get_logger
+
+
+_logger = get_logger("timer_bridge")
 
 
 class TimerBridge:
@@ -95,7 +99,7 @@ class TimerBridge:
         try:
             self.tick()
         except Exception:
-            pass
+            _logger.exception("TimerBridge callback failed")
         return self.poll_interval
 
     def _sync_ui_properties(self) -> None:
@@ -125,6 +129,7 @@ class TimerBridge:
             # 2. Last result summary
             if self.runtime.last_result:
                 props.last_result_summary = self.runtime.last_result.final_text[:120]
+            props.live_streaming_text = getattr(self.runtime, "streaming_text", "")
 
             # 3. Synchronize history items from RuntimeHistory to UIList collection
             if hasattr(self.runtime, "history"):
@@ -153,7 +158,7 @@ class TimerBridge:
                     if was_at_end:
                         props.history_index = len(props.history) - 1
         except Exception:
-            pass
+            _logger.exception("Failed to synchronize Blender UI properties")
 
     @staticmethod
     def tag_redraw_view3d() -> None:
@@ -170,4 +175,4 @@ class TimerBridge:
                     if area.type == "VIEW_3D":
                         area.tag_redraw()
         except Exception:
-            pass
+            _logger.exception("Failed to tag 3D Viewport areas for redraw")

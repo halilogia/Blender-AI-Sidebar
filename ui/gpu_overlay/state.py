@@ -29,6 +29,8 @@ class GPUOverlayState:
         self.is_processing: bool = False
         self.active_tool_name: Optional[str] = None
         self.last_response_text: str = ""
+        self.streaming_response_text: str = ""
+        self.response_copy_btn_rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
         # Approval Card Bounding Boxes and State
         self.pending_approval: Optional[Dict[str, Any]] = None
@@ -135,6 +137,10 @@ class GPUOverlayState:
             cx, cy, cw, ch = self.approval_card_rect
             if cx <= px <= cx + cw and cy <= py <= cy + ch:
                 return "approval_card"
+
+        cx, cy, cw, ch = self.response_copy_btn_rect
+        if cx <= px <= cx + cw and cy <= py <= cy + ch:
+            return "copy_response"
 
         bx, by, bw, bh = self.bar_rect
         if not (bx <= px <= bx + bw and by <= py <= by + bh):

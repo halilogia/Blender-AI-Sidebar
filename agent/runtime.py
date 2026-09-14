@@ -26,6 +26,7 @@ from core.events import (
 )
 from core.event_queue import ThreadSafeEventQueue
 from core.types import ToolResult
+from core.logging_utils import get_logger
 from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
@@ -83,6 +84,9 @@ VISUAL_VERIFY_KEYWORDS: Tuple[str, ...] = (
     "görsel olarak incele",
     "görsel olarak teyit",
 )
+
+
+_logger = get_logger("runtime")
 
 
 def should_verify_visually(text: Optional[str]) -> bool:
@@ -175,6 +179,11 @@ class AgentRuntime:
     def current_state(self) -> AgentState:
         """Get the current agent state."""
         return self.state_machine.current_state
+
+    @property
+    def streaming_text(self) -> str:
+        """Get the accumulated assistant text for the active turn."""
+        return self._streaming_text
 
     @property
     def current_turn_id(self) -> Optional[str]:
@@ -823,6 +832,11 @@ class AgentRuntime:
         """
         # Reject concurrent submissions if active turn is in progress
         if self.state_machine.current_state in (AgentState.PROCESSING, AgentState.EXECUTING_TOOL):
+            _logger.warning(
+                "Rejected prompt submission while state=%s turn_id=%s",
+                self.state_machine.current_state.value,
+                self._current_turn_id,
+            )
             raise RuntimeError("Active turn in progress. Concurrent submission rejected.")
 
         self._turn_counter += 1
@@ -836,6 +850,7 @@ class AgentRuntime:
         self._streaming_text = ""
         self._current_cancel_event = threading.Event()
         self._current_metrics = TurnMetrics(turn_id=turn_id, t_submitted=time.time())
+        _logger.info("Submitted turn %s (prompt_length=%d)", turn_id, len(prompt))
 
         # Record user prompt in session Conversation
         self.conversation.add_message(ChatMessage(role=Role.USER, content=prompt, image_id=image_id))
@@ -934,6 +949,12 @@ class AgentRuntime:
 
         # 4. Handle direct ProviderError stream event
         if isinstance(event, ProviderError):
+            _logger.error(
+                "Provider error turn=%s type=%s message=%s",
+                event.turn_id,
+                event.type.value if hasattr(event.type, "value") else event.type,
+                event.message,
+            )
             if event.type == ProviderErrorType.CANCELLED or (
                 self._current_cancel_event and self._current_cancel_event.is_set()
             ):
@@ -1381,6 +1402,13 @@ class AgentRuntime:
 
         # 7. Handle Worker/System Errors
         if isinstance(event, AgentErrorEvent):
+            _logger.error(
+                "Agent error turn=%s type=%s message=%s details=%s",
+                event.turn_id,
+                event.error_type,
+                event.message,
+                event.details,
+            )
             self.state_machine.transition_to(AgentState.ERROR)
             if self._current_metrics:
                 self._current_metrics.t_completed = time.time()
@@ -1407,6 +1435,11 @@ class AgentRuntime:
 
     def cancel_current_turn(self) -> None:
         """Cancel the currently active turn, discarding pending events and approvals."""
+        _logger.info(
+            "Cancelling turn=%s state=%s",
+            self._current_turn_id,
+            self.state_machine.current_state.value,
+        )
         self._pending_approval = None
         self._pending_plan_review = None
         self._current_plan_repairs = 0

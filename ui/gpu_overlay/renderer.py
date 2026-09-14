@@ -129,6 +129,24 @@ def draw_text(
     return blf.dimensions(font_id, text)
 
 
+def wrap_text(text: str, max_width: float, size: int, font_id: int = 0) -> List[str]:
+    """Wrap text to pixel width while preserving explicit newlines."""
+    blf.size(font_id, size)
+    lines: List[str] = []
+    for paragraph in (text or "").splitlines() or [""]:
+        words = paragraph.split(" ")
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if current and blf.dimensions(font_id, candidate)[0] > max_width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        lines.append(current)
+    return lines or [""]
+
+
 def draw_overlay_hud(context) -> None:
     """Primary Viewport draw callback rendering the floating Higgsfield-style AI HUD."""
     if not overlay_state.is_open:
@@ -149,6 +167,7 @@ def draw_overlay_hud(context) -> None:
     corner_r = 18.0
 
     overlay_state.bar_rect = (bar_x, bar_y, bar_w, bar_h)
+    overlay_state.response_copy_btn_rect = (0.0, 0.0, 0.0, 0.0)
 
     # Enable alpha blending
     gpu.state.blend_set("ALPHA")
@@ -260,7 +279,9 @@ def draw_overlay_hud(context) -> None:
         # Approval Card takes visual precedence over regular response drawer
         appr = overlay_state.pending_approval
         card_w = bar_w
-        card_h = 106.0
+        is_plan = appr.get("kind") == "plan"
+        shown_steps = appr.get("steps_shown", []) if is_plan else []
+        card_h = 142.0 + min(len(shown_steps), 5) * 18.0 if is_plan else 106.0
         card_x = bar_x
         card_y = bar_y + bar_h + 10.0
         corner_r = 16.0
@@ -273,7 +294,9 @@ def draw_overlay_hud(context) -> None:
         draw_rounded_rect(card_x, card_y, card_w, card_h, corner_r, (0.09, 0.095, 0.11, 0.98))
 
         # 2. Header row
-        draw_text("⚠ Confirm Action", card_x + 18.0, card_y + card_h - 24.0, size=12, color=(0.96, 0.72, 0.18, 1.0))
+        header = "▣ Plan Ready" if is_plan else "⚠ Confirm Action"
+        header_color = (0.55, 0.85, 1.0, 1.0) if is_plan else (0.96, 0.72, 0.18, 1.0)
+        draw_text(header, card_x + 18.0, card_y + card_h - 24.0, size=12, color=header_color)
         appr_id = appr.get("approval_id", "")
         if appr_id:
             draw_text(appr_id, card_x + card_w - 110.0, card_y + card_h - 22.0, size=10, color=(0.55, 0.57, 0.62, 0.8))
@@ -281,6 +304,18 @@ def draw_overlay_hud(context) -> None:
         # 3. Middle row: Action Description & Risk Badge
         desc = appr.get("description", "Execute action")
         draw_text(desc, card_x + 18.0, card_y + card_h - 48.0, size=14, color=(0.96, 0.96, 0.98, 1.0))
+
+        if is_plan:
+            step_y = card_y + card_h - 75.0
+            for step in shown_steps[:5]:
+                tool_name = step.get("tool_name", "tool")
+                step_desc = step.get("description", "")
+                label = f"✓ {tool_name}: {step_desc}" if step_desc else f"✓ {tool_name}"
+                draw_text(label, card_x + 22.0, step_y, size=11, color=(0.78, 0.9, 0.82, 1.0))
+                step_y -= 18.0
+            hidden_count = int(appr.get("hidden_count", 0) or 0)
+            if hidden_count:
+                draw_text(f"+ {hidden_count} more step(s)", card_x + 22.0, step_y, size=10, color=(0.6, 0.65, 0.7, 1.0))
 
         risk = str(appr.get("risk_level", "MEDIUM")).upper()
         risk_text = f"Risk: {risk}"
@@ -319,8 +354,9 @@ def draw_overlay_hud(context) -> None:
         overlay_state.approve_btn_rect = (0.0, 0.0, 0.0, 0.0)
 
         # Regular Response Drawer (If AI is thinking or has a response)
-        if is_processing or overlay_state.last_response_text or overlay_state.active_tool_name:
-            resp_text = overlay_state.last_response_text
+        overlay_state.response_copy_btn_rect = (0.0, 0.0, 0.0, 0.0)
+        if is_processing or overlay_state.last_response_text or overlay_state.streaming_response_text or overlay_state.active_tool_name:
+            resp_text = overlay_state.streaming_response_text or overlay_state.last_response_text
             if is_processing and overlay_state.active_tool_name:
                 resp_text = f"Running tool: {overlay_state.active_tool_name}..."
             elif is_processing and not resp_text:
@@ -328,7 +364,9 @@ def draw_overlay_hud(context) -> None:
 
             if resp_text:
                 drawer_w = bar_w
-                drawer_h = 76.0
+                body_lines = wrap_text(resp_text, drawer_w - 36.0, 12)
+                max_lines = max(1, min(len(body_lines), 10))
+                drawer_h = 58.0 + max_lines * 18.0
                 drawer_x = bar_x
                 drawer_y = bar_y + bar_h + 10.0
 
@@ -340,9 +378,20 @@ def draw_overlay_hud(context) -> None:
                 # Header
                 draw_text("🤖 Blender AI Assistant", drawer_x + 16.0, drawer_y + drawer_h - 22.0, size=11, color=(0.82, 0.99, 0.09, 0.9))
 
-                # Body text (truncate if too long for one line in preview)
-                preview = resp_text[:110] + ("..." if len(resp_text) > 110 else "")
-                draw_text(preview, drawer_x + 16.0, drawer_y + 18.0, size=12, color=(0.92, 0.93, 0.95, 1.0))
+                # Copy action for the complete response text.
+                copy_w = 60.0
+                copy_h = 22.0
+                copy_x = drawer_x + drawer_w - copy_w - 14.0
+                copy_y = drawer_y + drawer_h - copy_h - 10.0
+                overlay_state.response_copy_btn_rect = (copy_x, copy_y, copy_w, copy_h)
+                draw_rounded_rect(copy_x, copy_y, copy_w, copy_h, 6.0, (0.16, 0.18, 0.21, 1.0))
+                draw_text("Copy", copy_x + 14.0, copy_y + 7.0, size=10, color=(0.85, 0.88, 0.92, 1.0))
+
+                # Body text wraps into multiple lines instead of being truncated.
+                body_y = drawer_y + drawer_h - 48.0
+                for line in body_lines[:max_lines]:
+                    draw_text(line, drawer_x + 16.0, body_y, size=12, color=(0.92, 0.93, 0.95, 1.0))
+                    body_y -= 18.0
 
     # Restore default blend state
     gpu.state.blend_set("NONE")
