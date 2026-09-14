@@ -410,6 +410,7 @@ class OpenAICompatibleProvider:
         self.last_tool_calls = []
         finish_reason: Optional[str] = None
         usage: Optional[Dict[str, int]] = None
+        stream_done = False
 
         with resp:
             for raw_chunk in resp:
@@ -433,6 +434,7 @@ class OpenAICompatibleProvider:
 
                 for payload_str in events:
                     if payload_str == "[DONE]":
+                        stream_done = True
                         break
 
                     try:
@@ -493,6 +495,11 @@ class OpenAICompatibleProvider:
                             )
                             self.accumulator.feed_delta(tc_event)
                             yield tc_event
+
+                # [DONE] terminates the SSE message stream even when the HTTP
+                # connection remains alive for reuse by the provider.
+                if stream_done:
+                    break
 
             # Flush trailing SSE events if any
             try:

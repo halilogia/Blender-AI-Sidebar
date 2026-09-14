@@ -400,6 +400,34 @@ class TestOpenAIRequestMapper(unittest.TestCase):
         )
 
 
+class _KeepAliveResponse:
+    """Response whose next read would block/fail after the SSE [DONE] marker."""
+
+    def __init__(self):
+        self.read_attempts = 0
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.closed = True
+
+    def __iter__(self):
+        self.read_attempts += 1
+        yield b"data: [DONE]\n\n"
+        self.read_attempts += 1
+        raise AssertionError("provider attempted to read past SSE [DONE] on a keep-alive response")
+
+
+class _KeepAliveHttpClient:
+    def __init__(self, response):
+        self.response = response
+
+    def post(self, *args, **kwargs):
+        return self.response
+
+
 class TestOpenAICompatibleProviderWithMockServer(unittest.TestCase):
     """Comprehensive provider test suite against local mock HTTP server."""
 
@@ -438,6 +466,29 @@ class TestOpenAICompatibleProviderWithMockServer(unittest.TestCase):
 
         provider.http_client.post = post_with_scenario
         return provider
+
+    def test_done_marker_completes_without_reading_keep_alive_socket(self):
+        """[DONE] must complete the provider before the keep-alive response is read again."""
+        response = _KeepAliveResponse()
+        cfg = Config(
+            base_url="http://127.0.0.1:1",
+            model="test-model",
+            api_key="sk-test-key",
+            timeout_seconds=5.0,
+        )
+        provider = OpenAICompatibleProvider(
+            config=cfg,
+            http_client=_KeepAliveHttpClient(response),
+            online_access=True,
+        )
+
+        events = list(provider.stream_chat(ContextBuilder.build()))
+
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], ProviderCompleted)
+        self.assertEqual(events[0].finish_reason, "stop")
+        self.assertEqual(response.read_attempts, 1)
+        self.assertTrue(response.closed)
 
     # --- Basic Text Streaming ---
 
