@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-09-14
+
+### Added
+- First public release checkpoint for Blender AI Copilot.
+- FIFO prompt queue with ordered HUD/N-Panel visibility.
+- Shared `RuntimeSnapshot` projection for consistent UI state.
+- Stateless `EventRouter` boundary preserving AgentRuntime lifecycle ownership.
+- Project-local diagnostic log override through `BLENDER_AI_LOG_DIR`.
+- Multiline GPU HUD input with automatic wrapping, long-token splitting, and cursor positioning.
+- Presentation-layer assistant text cleanup for HTML entities such as `&#x20;`.
+- English and Turkish README documentation.
+
+### Verified
+- 618 pure-Python unit tests passing.
+- 23 Blender integration test files maintained for Blender-runtime verification.
+- Existing SSE keep-alive completion, cancellation, approval, plan execution, queue, and verification paths remain covered.
+
 ## [0.9.0] - 2026-09-14
 
 ### Added

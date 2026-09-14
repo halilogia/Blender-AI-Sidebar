@@ -132,17 +132,37 @@ def draw_text(
 def wrap_text(text: str, max_width: float, size: int, font_id: int = 0) -> List[str]:
     """Wrap text to pixel width while preserving explicit newlines."""
     blf.size(font_id, size)
+    if max_width <= 0:
+        return [text or ""]
+
+    def split_long_word(word: str) -> Tuple[List[str], str]:
+        """Split an unbroken token so it cannot escape the input rectangle."""
+        fragments: List[str] = []
+        current = ""
+        for char in word:
+            candidate = current + char
+            if current and blf.dimensions(font_id, candidate)[0] > max_width:
+                fragments.append(current)
+                current = char
+            else:
+                current = candidate
+        return fragments, current
+
     lines: List[str] = []
-    for paragraph in (text or "").splitlines() or [""]:
+    for paragraph in (text or "").split("\n") or [""]:
         words = paragraph.split(" ")
         current = ""
         for word in words:
             candidate = word if not current else f"{current} {word}"
-            if current and blf.dimensions(font_id, candidate)[0] > max_width:
-                lines.append(current)
-                current = word
-            else:
+            if current and blf.dimensions(font_id, candidate)[0] <= max_width:
                 current = candidate
+            elif current:
+                lines.append(current)
+                fragments, current = split_long_word(word)
+                lines.extend(fragments)
+            else:
+                fragments, current = split_long_word(word)
+                lines.extend(fragments)
         lines.append(current)
     return lines or [""]
 
@@ -159,9 +179,14 @@ def draw_overlay_hud(context) -> None:
     reg_w = region.width
     reg_h = region.height
 
-    # Responsive dimensions
+    # Responsive dimensions. The input grows vertically when a prompt wraps;
+    # this keeps long prompts readable instead of drawing them beyond the HUD.
     bar_w = min(680.0, max(460.0, reg_w - 60.0))
-    bar_h = 74.0
+    input_w = bar_w - 180.0
+    prompt = overlay_state.prompt_text
+    prompt_lines = wrap_text(prompt, input_w - 4.0, 14) if prompt else [""]
+    input_line_count = max(1, len(prompt_lines))
+    bar_h = 74.0 + max(0, input_line_count - 1) * 16.0
     bar_x = (reg_w - bar_w) / 2.0
     bar_y = 42.0
     corner_r = 18.0
@@ -191,22 +216,26 @@ def draw_overlay_hud(context) -> None:
 
     input_x = sparkle_x + 22.0
     input_y = sparkle_y
-    input_w = bar_w - 180.0
-    input_h = 24.0
-    overlay_state.input_rect = (input_x, input_y - 4.0, input_w, input_h)
+    input_h = input_line_count * 16.0 + 8.0
+    overlay_state.input_rect = (input_x, input_y - input_h + 4.0, input_w, input_h)
 
     # Display prompt or placeholder
-    prompt = overlay_state.prompt_text
     if prompt:
         # Draw user typed text
-        draw_text(prompt, input_x, input_y, size=14, color=(0.95, 0.95, 0.97, 1.0))
-        # Cursor line calculation
-        prefix = prompt[:overlay_state.cursor_pos]
+        text_y = input_y
+        for line in prompt_lines:
+            draw_text(line, input_x, text_y, size=14, color=(0.95, 0.95, 0.97, 1.0))
+            text_y -= 16.0
+
+        # Cursor line calculation uses the same wrapping rules as the prompt.
+        prefix_lines = wrap_text(prompt[:overlay_state.cursor_pos], input_w - 4.0, 14)
+        cursor_line = prefix_lines[-1] if prefix_lines else ""
+        cursor_line_index = max(0, len(prefix_lines) - 1)
         blf.size(0, 14)
-        cur_offset = blf.dimensions(0, prefix)[0]
+        cur_offset = blf.dimensions(0, cursor_line)[0]
         if overlay_state.cursor_visible:
             cur_x = input_x + cur_offset + 1.0
-            cur_y = input_y - 2.0
+            cur_y = input_y - cursor_line_index * 16.0 - 2.0
             draw_rounded_rect(cur_x, cur_y, 2.0, 16.0, 1.0, (0.82, 0.99, 0.09, 0.9))
     else:
         # Placeholder

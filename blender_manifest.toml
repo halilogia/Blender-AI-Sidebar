@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "blender_ai_sidebar"
-version = "0.4.0"
+version = "1.0.0"
 name = "Blender AI Sidebar"
 tagline = "Autonomous AI Agent & Grounding Copilot for Blender"
 maintainer = "Halil Emre"
@@ -25,4 +25,3 @@ copyright = [
 
 [permissions]
 network = "Allows communication with the configured LLM provider"
-

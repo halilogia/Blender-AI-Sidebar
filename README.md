@@ -1,15 +1,21 @@
-# Blender AI Copilot (Blender AI Sidebar)
+# Blender AI Copilot (Blender AI Sidebar) — v1.0.0
 
 > Autonomous Grounding Copilot & AI Agent inside Blender 5.2.1 LTS.
 
+[English](#english) | [Türkçe](#türkçe)
+
 [![Blender Version](https://img.shields.io/badge/Blender-5.2.1%20LTS-orange.svg)](https://www.blender.org/)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%20Zero%20Dependencies-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/Tests-252%20Unit%20%7C%2012%20Headless%20Suites-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-618%20Unit%20%7C%2023%20Integration%20Suites-brightgreen.svg)]()
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 **Blender AI Copilot** is a native, extensible AI agent built specifically for Blender 5.2.1 LTS. It connects modern Large Language Models (LLMs) directly to Blender's internal data model using deterministic grounding tools, safe scene mutations with atomic undo, strict policy-driven human approval gates, and a lightweight native GPU Viewport overlay.
 
+> v1.0.0 is the first public release checkpoint. It includes FIFO prompt queueing, structured plan/task progress, diagnostics, multiline HUD input, and 618 passing pure-Python unit tests.
+
 ---
+
+## English
 
 ## Key Features
 
@@ -122,6 +128,7 @@ Blender AI Sidebar/
 ├── agent/                        # Core agent coordinator & provider logic
 │   ├── context_builder.py        # ProviderRequestContext assembler & guards
 │   ├── dispatcher.py             # Tool validation & invocation dispatcher
+│   ├── event_router.py           # Stateless event classification boundary
 │   ├── history.py                # Runtime history tracking
 │   ├── http_client.py            # Pure Python streaming HTTP client
 │   ├── mock_provider.py          # Deterministic offline mock provider
@@ -129,7 +136,9 @@ Blender AI Sidebar/
 │   ├── openai_provider.py        # OpenAI-compatible streaming LLM adapter
 │   ├── policy.py                 # ApprovalPolicy, PendingApproval, RiskLevel gating
 │   ├── provider.py               # Abstract provider interface
+│   ├── prompt_queue.py           # FIFO prompts submitted during an active turn
 │   ├── runtime.py                # Main-thread state coordinator & approval handlers
+│   ├── runtime_snapshot.py       # Consistent UI-neutral runtime projection
 │   ├── sse_parser.py             # Deterministic byte-level SSE parser
 │   ├── state_machine.py          # State transitions (IDLE/PROCESSING/TOOL/APPROVAL/ERROR)
 │   ├── tool_call_accumulator.py  # Streaming tool-call reassembly
@@ -166,14 +175,15 @@ Blender AI Sidebar/
 │   ├── operators.py              # Send, Clear, Cancel, Approve, Reject operators
 │   ├── panel.py                  # 3D Viewport N-Panel sidebar interface
 │   ├── preferences.py            # Addon Preferences & config persistence
+│   ├── text_formatting.py        # Presentation-only assistant text cleanup
 │   ├── properties.py             # WindowManager RNA property definitions
 │   ├── timer_bridge.py           # bpy.app.timers consumer & UI sync
 │   └── uilist.py                 # Custom UIList history display
 ├── tests/                        # Comprehensive test harnesses
 │   ├── integration/              # Headless Blender 5.2.1 LTS integration suites
 │   ├── manual/                   # Live endpoint verification scripts (9Router)
-│   ├── unit/                     # Pure Python unit test suites (252 tests)
-│   ├── run_all_blender_tests.py  # Master headless test runner (12 suites)
+│   ├── unit/                     # Pure Python unit test suites (618 tests)
+│   ├── run_all_blender_tests.py  # Master headless test runner (23 suites)
 │   └── run_unit_tests.py         # Pure Python test runner
 ├── blender_manifest.toml         # Blender 5.2 Extension manifest
 ├── LICENSE                       # GNU General Public License v3.0
@@ -215,6 +225,9 @@ Blender AI Sidebar/
    - Click **Approve (Y)** or press `Y`/`Enter` to permit execution.
    - Click **Reject (N)** or press `N`/`Esc` to decline. The rejection is fed back to the LLM to continue the conversation safely.
 4. **Undo Support**: Any mutation can be reverted at any moment via Blender's standard `Ctrl + Z`.
+5. **Prompt Queue**: Prompts submitted while another turn is active are kept in FIFO order and processed automatically.
+6. **Plan and Task Progress**: Multi-step plans show approval cards and task progress with completed/failed step status.
+7. **Multiline HUD**: Long prompts and assistant responses wrap across multiple lines. Shift+Enter inserts an explicit newline.
 
 ---
 
@@ -232,7 +245,7 @@ python tests/run_unit_tests.py tests.unit.test_prompt_queue tests.unit.test_hard
 ```
 
 ### 2. Headless Blender Integration Tests
-Runs all 12 headless integration test suites inside Blender's actual Python runtime:
+Runs all 23 headless integration test suites inside Blender's actual Python runtime:
 ```bash
 python tests/run_all_blender_tests.py
 ```
@@ -258,6 +271,78 @@ $env:BLENDER_AI_LOG_DIR = ".\\logs"
 
 The `logs/` directory and `*.log` files are excluded from Git because logs may
 contain prompts and provider error details.
+
+---
+
+## Türkçe
+
+Blender AI Copilot, Blender içinde çalışan yerel ve genişletilebilir bir AI
+ajanıdır. OpenAI uyumlu LLM sağlayıcılarıyla konuşur; sahneyi incelemek,
+nesne oluşturmak, dönüştürmek, silmek, materyal düzenlemek ve çok adımlı
+işlemleri güvenli biçimde yürütmek için yapılandırılmış araçlar kullanır.
+
+### Öne çıkan özellikler
+
+- Sahne, seçim, obje, materyal ve mesh inceleme araçları.
+- Küp, küre ve düzlem oluşturma; obje dönüştürme ve silme.
+- Kamera, ışık, materyal, modifier, shading ve duplicate işlemleri.
+- Risk tabanlı onay sistemi: düşük riskli işlemler otomatik, orta/yüksek riskli işlemler kullanıcı onaylıdır.
+- Plan kartı, Approve/Reject butonları ve task ilerlemesi.
+- Uzun promptlar ve AI cevapları için çok satırlı GPU HUD görünümü.
+- Aktif işlem sürerken gönderilen mesajlar için FIFO queue.
+- İptal, stale turn koruması, hata kaydı ve Blender `Ctrl+Z` undo desteği.
+- Harici Python paketi gerektirmeyen standart kütüphane tabanlı mimari.
+
+### Kurulum
+
+1. Repository’yi indirin veya clone edin:
+
+   ```bash
+   git clone https://github.com/halilogia/Blender-AI-Sidebar.git
+   ```
+
+2. Blender’da **Edit > Preferences > Add-ons** menüsünü açın.
+3. **Blender AI Sidebar** eklentisini etkinleştirin.
+4. Eklenti ayarlarından OpenAI uyumlu endpoint, model ve gerekiyorsa API key girin.
+5. GPU HUD için 3D Viewport üzerinde `Alt + Space`, N-Panel için `N` tuşuna basın.
+
+### Kullanım
+
+- `Sahneyi incele` gibi salt-okunur komutlar doğrudan çalışır.
+- `Bir küp oluştur` gibi düşük riskli mutasyonlar güvenli şekilde yürütülür.
+- Silme gibi riskli işlemlerde plan/onay kartı görünür; **Approve** veya **Reject** seçilir.
+- İşlem sürerken yeni mesaj gönderilirse mesaj FIFO sırasına alınır.
+- Uzun yazılar otomatik olarak alt satıra geçer; Shift+Enter manuel yeni satır ekler.
+- Hata durumunda N-Panel’deki **Diagnostics** bölümünden log yolunu kopyalayabilirsiniz.
+
+### Testler
+
+Pure Python testlerini çalıştırmak için:
+
+```bash
+python tests/run_unit_tests.py
+```
+
+Odaklanmış test çalıştırmak için:
+
+```bash
+python tests/run_unit_tests.py tests.unit.test_prompt_queue tests.unit.test_event_router
+```
+
+v1.0.0 checkpoint’inde 618 pure-Python unit testi ve 23 Blender integration
+test dosyası bulunmaktadır. Gerçek Blender entegrasyon testleri Blender’ın
+kurulu olduğu ortamda çalıştırılmalıdır.
+
+### Tanılama logları
+
+Varsayılan log işletim sisteminin geçici klasörüne yazılır. Proje içinde
+erişilebilir bir `logs/` klasörü kullanmak için PowerShell’de:
+
+```powershell
+$env:BLENDER_AI_LOG_DIR = ".\logs"
+```
+
+Loglar prompt ve provider hata ayrıntıları içerebileceği için Git’e eklenmez.
 
 ---
 

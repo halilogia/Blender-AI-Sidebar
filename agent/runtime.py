@@ -29,6 +29,7 @@ from core.types import ToolResult
 from core.logging_utils import get_logger
 from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
+from agent.event_router import EventRoute, EventRouter
 from agent.history import HistoryKind, RuntimeHistory
 from agent.prompt_queue import PromptQueue, QueuedPrompt
 from agent.runtime_snapshot import RuntimeSnapshot
@@ -50,7 +51,6 @@ from agent.models import (
     AgentResult,
     ChatMessage,
     Conversation,
-    ProviderCompleted,
     ProviderError,
     ProviderErrorType,
     ProviderResponse,
@@ -58,7 +58,6 @@ from agent.models import (
     Role,
     TextDelta,
     ToolCall,
-    ToolCallDelta,
 )
 from agent.provider import BaseProvider
 from agent.state_machine import AgentState, AgentStateMachine
@@ -141,6 +140,7 @@ class AgentRuntime:
         self.worker = worker or AgentWorker(provider=self.provider, event_queue=self.event_queue)
         self.history = RuntimeHistory()
         self.prompt_queue = PromptQueue(maxsize=20)
+        self._event_router = EventRouter()
 
         # Session Conversation & multi-round loop guard
         self.conversation = Conversation()
@@ -1141,18 +1141,23 @@ class AgentRuntime:
         if self._current_metrics and self._current_metrics.t_first_event is None:
             self._current_metrics.t_first_event = getattr(event, "timestamp", None) or time.time()
 
-        # 3. Handle Streaming Text Delta (from Worker event or direct ProviderStreamEvent)
-        if isinstance(event, StreamingTextDeltaEvent):
+        # 3. Classify the event only after stale filtering.  EventRouter is
+        # intentionally stateless; all lifecycle and side effects remain in
+        # this Runtime method.
+        route = self._event_router.route(event)
+
+        # 4. Handle Streaming Text Delta (from Worker event or direct ProviderStreamEvent)
+        if route == EventRoute.STREAMING_TEXT_DELTA:
             self._streaming_text += event.delta
             return None
-        elif isinstance(event, TextDelta):
+        elif route == EventRoute.TEXT_DELTA:
             self._streaming_text += event.text
             return None
-        elif isinstance(event, ToolCallDelta):
+        elif route == EventRoute.TOOL_CALL_DELTA:
             return None
 
-        # 4. Handle direct ProviderError stream event
-        if isinstance(event, ProviderError):
+        # 5. Handle direct ProviderError stream event
+        if route == EventRoute.PROVIDER_ERROR:
             _logger.error(
                 "Provider error turn=%s type=%s message=%s",
                 event.turn_id,
@@ -1195,8 +1200,8 @@ class AgentRuntime:
             self._current_turn_id = None
             return err_result
 
-        # 5. Handle direct ProviderCompleted stream event (normalize into ProviderResponseReadyEvent)
-        if isinstance(event, ProviderCompleted):
+        # 6. Handle direct ProviderCompleted stream event (normalize into ProviderResponseReadyEvent)
+        if route == EventRoute.PROVIDER_COMPLETED:
             tool_calls = list(getattr(self.provider, "last_tool_calls", []))
             is_final = not bool(tool_calls)
             resp = ProviderResponse(
@@ -1205,9 +1210,10 @@ class AgentRuntime:
                 is_final=is_final,
             )
             event = ProviderResponseReadyEvent(response=resp, turn_id=event.turn_id)
+            route = EventRoute.PROVIDER_RESPONSE_READY
 
-        # 6. Handle Provider response (from worker or direct completion)
-        if isinstance(event, ProviderResponseReadyEvent):
+        # 7. Handle Provider response (from worker or direct completion)
+        if route == EventRoute.PROVIDER_RESPONSE_READY:
             if self._current_cancel_event and self._current_cancel_event.is_set():
                 return None
 
@@ -1612,8 +1618,8 @@ class AgentRuntime:
             )
             return None
 
-        # 7. Handle Worker/System Errors
-        if isinstance(event, AgentErrorEvent):
+        # 8. Handle Worker/System Errors
+        if route == EventRoute.AGENT_ERROR:
             _logger.error(
                 "Agent error turn=%s type=%s message=%s details=%s",
                 event.turn_id,

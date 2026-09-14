@@ -2,7 +2,7 @@
 
 This roadmap outlines the phased development trajectory for Blender AI Copilot, transitioning from a robust, non-destructive grounding foundation to a fully autonomous, safe Blender copilot.
 
-**CURRENT STATUS: M9 — Advanced Agentic Blender Operations (COMPLETED)**
+**CURRENT STATUS: v1.0.0 — Public Release Preparation / M9 Agentic Foundation Completed**
 
 ---
 
@@ -21,6 +21,7 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 | **M4.2** | **High-Level Plan Review** | Structured immutable plans, PlanValidator, propose_plan, PlanExecutor, batch approval | **COMPLETED** | 517 pure Python tests |
 | **M8** | **Context Compaction & Rolling Memory** | Rolling memory, selective pruning, .blend session persistence + sanitization | **COMPLETED** | 419 pure Python tests, 18 Blender suites |
 | **M9** | **Advanced Agentic Blender Operations** | Semantic tools (camera, light, modifiers, shading, duplicate), agentic repair loop, E2E acceptance | **COMPLETED** | 603 pure Python tests, 23 Blender suites |
+| **v1.0** | **Public Release Hardening** | Queue, diagnostics, runtime snapshot, event routing, multiline HUD, bilingual docs | **COMPLETED** | 618 pure Python tests |
 
 ---
 
@@ -222,4 +223,3 @@ This roadmap outlines the phased development trajectory for Blender AI Copilot, 
 - [ ] Distribution packaging & Blender Extensions platform submission.
 - [ ] Performance profiling and memory optimization under heavy scene loads.
 - [ ] Extended documentation, video tutorials, and interactive onboarder.
-

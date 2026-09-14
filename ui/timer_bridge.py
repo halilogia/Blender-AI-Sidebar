@@ -10,6 +10,7 @@ import bpy
 from core.event_queue import ThreadSafeEventQueue
 from agent.runtime import AgentRuntime
 from core.logging_utils import get_logger
+from .text_formatting import clean_assistant_text
 
 
 _logger = get_logger("timer_bridge")
@@ -134,9 +135,9 @@ class TimerBridge:
 
             # 2. Last result summary
             if snapshot and snapshot.last_response_text:
-                props.last_result_summary = snapshot.last_response_text[:120]
+                props.last_result_summary = clean_assistant_text(snapshot.last_response_text)[:120]
             elif self.runtime.last_result:
-                props.last_result_summary = self.runtime.last_result.final_text[:120]
+                props.last_result_summary = clean_assistant_text(self.runtime.last_result.final_text)[:120]
             props.live_streaming_text = snapshot.streaming_text if snapshot else getattr(self.runtime, "streaming_text", "")
             if hasattr(props, "queued_count"):
                 props.queued_count = snapshot.queued_count if snapshot else len(getattr(self.runtime, "queued_prompts", []))

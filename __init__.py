@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Blender AI Sidebar",
     "author": "Halil Emre",
-    "version": (0, 2, 0),
+    "version": (1, 0, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > AI Sidebar / View3D > Alt+Space",
     "description": "Autonomous AI Agent & Grounding Copilot for Blender",

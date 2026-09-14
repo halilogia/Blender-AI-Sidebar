@@ -5,6 +5,7 @@ from bpy.types import Operator
 
 from .state import overlay_state
 from .renderer import draw_overlay_hud
+from ..text_formatting import clean_assistant_text
 from core.logging_utils import get_logger
 
 _active_modal_operator = None
@@ -114,12 +115,14 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                     last_response = snapshot.last_response_text if snapshot else (
                         runtime.last_result.final_text if runtime.last_result else ""
                     )
+                    last_response = clean_assistant_text(last_response)
                     if last_response:
                         if overlay_state.last_response_text != last_response:
                             overlay_state.last_response_text = last_response
                             state_changed = True
 
                     live_text = snapshot.streaming_text if snapshot else getattr(runtime, "streaming_text", "")
+                    live_text = clean_assistant_text(live_text)
                     if overlay_state.streaming_response_text != live_text:
                         overlay_state.streaming_response_text = live_text
                         state_changed = True
