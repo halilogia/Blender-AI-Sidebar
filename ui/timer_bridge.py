@@ -73,14 +73,19 @@ class TimerBridge:
             max_time_sec=self.max_tick_seconds,
         )
 
-        if not events:
-            return 0
-
         state_changed = False
         for event in events:
             old_state = self.runtime.current_state
             self.runtime.process_event(event)
             if self.runtime.current_state != old_state:
+                state_changed = True
+
+        # A completed/cancelled turn clears current_turn_id during event
+        # processing. Start the oldest queued user message only after all
+        # events in this tick have been applied to main-thread state.
+        if hasattr(self.runtime, "pump_prompt_queue"):
+            queued_turn = self.runtime.pump_prompt_queue()
+            if queued_turn:
                 state_changed = True
 
         # Sync runtime state to Blender UI WindowManager properties
@@ -89,7 +94,7 @@ class TimerBridge:
         # Tag 3D Viewport areas for redraw if state changed or events arrived
         self.tag_redraw_view3d()
 
-        return len(events)
+        return len(events) + (1 if state_changed and not events else 0)
 
     def _timer_callback(self) -> Optional[float]:
         """Internal callback invoked by Blender's main event loop."""
@@ -130,6 +135,8 @@ class TimerBridge:
             if self.runtime.last_result:
                 props.last_result_summary = self.runtime.last_result.final_text[:120]
             props.live_streaming_text = getattr(self.runtime, "streaming_text", "")
+            if hasattr(props, "queued_count"):
+                props.queued_count = len(getattr(self.runtime, "queued_prompts", []))
 
             # 3. Synchronize history items from RuntimeHistory to UIList collection
             if hasattr(self.runtime, "history"):
@@ -157,6 +164,20 @@ class TimerBridge:
                         dst.summary = src.summary
                     if was_at_end:
                         props.history_index = len(props.history) - 1
+
+                # Existing entries can change QUEUED -> RUNNING -> terminal;
+                # keep the Blender collection synchronized instead of only
+                # appending new rows.
+                for idx, src in enumerate(py_items):
+                    if idx >= len(props.history):
+                        break
+                    dst = props.history[idx]
+                    dst.item_id = src.item_id
+                    dst.turn_id = src.turn_id
+                    dst.kind = src.kind
+                    dst.title = src.title
+                    dst.status = src.status
+                    dst.summary = src.summary
         except Exception:
             _logger.exception("Failed to synchronize Blender UI properties")
 

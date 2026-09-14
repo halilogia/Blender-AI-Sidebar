@@ -175,7 +175,7 @@ class TestHistoryMemoryPolicy(unittest.TestCase):
 class TestRuntimeConcurrencyHardening(unittest.TestCase):
     """Verify runtime protection against concurrent requests."""
 
-    def test_concurrent_submit_rejected(self):
+    def test_concurrent_submit_is_queued(self):
         mock_provider = MagicMock()
         mock_dispatcher = MagicMock()
         mock_worker = MagicMock()
@@ -191,10 +191,19 @@ class TestRuntimeConcurrencyHardening(unittest.TestCase):
         runtime.submit_prompt("first prompt")
         self.assertEqual(runtime.current_state, AgentState.PROCESSING)
 
-        # Second submit while PROCESSING must raise RuntimeError
-        with self.assertRaises(RuntimeError) as ctx:
-            runtime.submit_prompt("second prompt")
-        self.assertIn("Active turn in progress", str(ctx.exception))
+        # Second submit while PROCESSING is retained in FIFO order.
+        queued_id = runtime.submit_prompt("second prompt")
+        self.assertEqual(queued_id, "queued_1")
+        self.assertEqual(len(runtime.queued_prompts), 1)
+        self.assertEqual(runtime.history.items[-1].status, "QUEUED")
+
+        runtime.cancel_current_turn()
+        started_id = runtime.pump_prompt_queue()
+        self.assertEqual(started_id, "turn_2")
+        self.assertEqual(runtime.current_turn_id, "turn_2")
+        queued_item = runtime.history.get_by_id("queued_1")
+        self.assertIsNotNone(queued_item)
+        self.assertEqual(queued_item.status, "RUNNING")
 
 
 if __name__ == "__main__":

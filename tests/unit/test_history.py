@@ -41,6 +41,17 @@ class TestRuntimeHistory(unittest.TestCase):
         self.assertEqual(len(history), 0)
         self.assertIsNone(history.get_by_index(0))
 
+    def test_update_existing_item(self):
+        history = RuntimeHistory()
+        history.add("queued_1", "queued_1", HistoryKind.USER, "Queued: test", status="QUEUED")
+        updated = history.update(
+            "queued_1", turn_id="turn_1", title="User: test", status="RUNNING", summary="test"
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.turn_id, "turn_1")
+        self.assertEqual(updated.status, "RUNNING")
+        self.assertIsNone(history.update("missing", status="ERROR"))
+
     def test_history_item_to_dict(self):
         item = HistoryItem(
             item_id="item_1",

@@ -30,6 +30,7 @@ from core.logging_utils import get_logger
 from agent.context_builder import ContextBuilder, ImageResolutionError
 from agent.dispatcher import ToolDispatcher
 from agent.history import HistoryKind, RuntimeHistory
+from agent.prompt_queue import PromptQueue, QueuedPrompt
 from agent.verifier import ChangeVerifier, build_change_set_from_result
 from agent.visual_verifier import (
     VisualResultParser,
@@ -138,6 +139,7 @@ class AgentRuntime:
         self.event_queue = event_queue or ThreadSafeEventQueue()
         self.worker = worker or AgentWorker(provider=self.provider, event_queue=self.event_queue)
         self.history = RuntimeHistory()
+        self.prompt_queue = PromptQueue(maxsize=20)
 
         # Session Conversation & multi-round loop guard
         self.conversation = Conversation()
@@ -201,6 +203,11 @@ class AgentRuntime:
     def current_turn_id(self) -> Optional[str]:
         """Get the active turn identifier, if any."""
         return self._current_turn_id
+
+    @property
+    def queued_prompts(self) -> List[QueuedPrompt]:
+        """Return queued user prompts in FIFO order for UI rendering."""
+        return self.prompt_queue.items
 
     @property
     def last_result(self) -> Optional[AgentResult]:
@@ -898,6 +905,7 @@ class AgentRuntime:
         self._active_conversation_start = None
         self._last_plan_summary = None
         self._last_result = None
+        self.prompt_queue.clear()
 
     def submit_prompt(
         self,
@@ -905,27 +913,84 @@ class AgentRuntime:
         image_id: Optional[str] = None,
         expected_visual_description: Optional[str] = None,
     ) -> str:
-        """Submit a prompt for asynchronous background processing.
+        """Submit a prompt or queue it behind the active turn."""
+        if (
+            self._current_turn_id is not None
+            or self.state_machine.current_state
+            in (AgentState.PROCESSING, AgentState.EXECUTING_TOOL, AgentState.PENDING_APPROVAL)
+        ):
+            queued = self.prompt_queue.enqueue(
+                prompt=prompt,
+                image_id=image_id,
+                expected_visual_description=expected_visual_description,
+            )
+            self.history.add(
+                item_id=queued.history_item_id,
+                turn_id=queued.queue_id,
+                kind=HistoryKind.USER,
+                title=f"Queued: {prompt[:36]}",
+                status="QUEUED",
+                summary=prompt,
+                detail=f"Waiting behind active turn.\n{prompt}",
+            )
+            _logger.info("Queued prompt %s behind active turn %s", queued.queue_id, self._current_turn_id)
+            return queued.queue_id
+        return self._start_prompt(
+            prompt,
+            image_id=image_id,
+            expected_visual_description=expected_visual_description,
+        )
 
-        Allocates a monotonic turn_id, transitions to PROCESSING,
-        and delegates generation to the background worker.
+    def pump_prompt_queue(self) -> Optional[str]:
+        """Start the oldest queued prompt when the runtime is idle."""
+        if self._current_turn_id is not None:
+            return None
+        if self.state_machine.current_state in (
+            AgentState.PROCESSING,
+            AgentState.EXECUTING_TOOL,
+            AgentState.PENDING_APPROVAL,
+        ):
+            return None
+        queued = self.prompt_queue.pop()
+        if queued is None:
+            return None
+        try:
+            return self._start_prompt(
+                queued.prompt,
+                image_id=queued.image_id,
+                expected_visual_description=queued.expected_visual_description,
+                history_item_id=queued.history_item_id,
+            )
+        except Exception as exc:
+            self.history.update(
+                queued.history_item_id,
+                status="ERROR",
+                title=f"Queue error: {queued.prompt[:30]}",
+                summary=str(exc),
+                detail=f"Queued prompt could not start: {exc}",
+            )
+            _logger.exception("Failed to start queued prompt %s", queued.queue_id)
+            return None
 
-        Args:
-            prompt: User natural language prompt.
-            image_id: Optional in-memory image identifier for multimodal turns.
-            expected_visual_description: Optional target visual description for post-mutation verification.
-
-        Returns:
-            The allocated turn_id string.
-        """
-        # Reject concurrent submissions if active turn is in progress
+    def _start_prompt(
+        self,
+        prompt: str,
+        image_id: Optional[str] = None,
+        expected_visual_description: Optional[str] = None,
+        history_item_id: Optional[str] = None,
+    ) -> str:
+        """Start one prompt immediately; the public method handles queuing."""
+        # Reject concurrent starts defensively.
         if self.state_machine.current_state in (AgentState.PROCESSING, AgentState.EXECUTING_TOOL):
             _logger.warning(
                 "Rejected prompt submission while state=%s turn_id=%s",
                 self.state_machine.current_state.value,
                 self._current_turn_id,
             )
-            raise RuntimeError("Active turn in progress. Concurrent submission rejected.")
+            raise RuntimeError("Active turn in progress. Prompt must be queued by submit_prompt.")
+
+        if self.state_machine.current_state == AgentState.ERROR:
+            self.state_machine.reset()
 
         # Recover defensively from a previous interrupted turn.  Normally
         # cancel_current_turn() performs this cleanup, but this guard also
@@ -962,15 +1027,25 @@ class AgentRuntime:
         self.event_queue.put(PromptSubmittedEvent(prompt=prompt, turn_id=turn_id))
 
         hist_detail = f"{prompt}\n[Attached image: {image_id}]" if image_id else prompt
-        self.history.add(
-            item_id=f"{turn_id}_user",
-            turn_id=turn_id,
-            kind=HistoryKind.USER,
-            title=f"User: {prompt[:36]}",
-            status="SENT",
-            summary=prompt,
-            detail=hist_detail,
-        )
+        if history_item_id:
+            self.history.update(
+                history_item_id,
+                turn_id=turn_id,
+                title=f"User: {prompt[:36]}",
+                status="RUNNING",
+                summary=prompt,
+                detail=hist_detail,
+            )
+        else:
+            self.history.add(
+                item_id=f"{turn_id}_user",
+                turn_id=turn_id,
+                kind=HistoryKind.USER,
+                title=f"User: {prompt[:36]}",
+                status="SENT",
+                summary=prompt,
+                detail=hist_detail,
+            )
 
         context = None
         if hasattr(self.provider, "stream_chat"):
@@ -1873,6 +1948,8 @@ class AgentRuntime:
         self._current_prompt = ""
         self._expected_visual_description = None
         self._current_plan_repairs = 0
+        self.prompt_queue.clear()
+        self._last_plan_summary = None
 
     def shutdown(self) -> None:
         """Gracefully terminate background workers and queue."""

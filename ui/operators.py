@@ -20,8 +20,8 @@ class AISIDEBAR_OT_send_prompt(Operator):
         props = getattr(context.window_manager, "ai_sidebar", None)
         if not props or not props.prompt_input.strip():
             return False
-        # Do not allow sending if already active
-        return props.agent_status in ("IDLE", "ERROR")
+        # Active submissions are accepted and become visible FIFO queue rows.
+        return props.agent_status in ("IDLE", "ERROR", "PROCESSING", "EXECUTING_TOOL", "PENDING_APPROVAL")
 
     def execute(self, context):
         from .. import get_runtime

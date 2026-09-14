@@ -56,6 +56,13 @@ class AISidebarUIProperties(PropertyGroup):
         default=-1,
     )
 
+    queued_count: IntProperty(
+        name="Queued Prompts",
+        description="Number of user prompts waiting behind the active turn",
+        default=0,
+        min=0,
+    )
+
     ui_mode: bpy.props.EnumProperty(
         name="UI Mode",
         description="Current AI floating UI state",
@@ -101,6 +108,7 @@ def unregister_properties():
             wm.ai_sidebar.agent_status = "IDLE"
             wm.ai_sidebar.current_action = "Ready"
             wm.ai_sidebar.prompt_input = ""
+            wm.ai_sidebar.queued_count = 0
     except Exception:
         pass
     if hasattr(bpy.types.WindowManager, "ai_sidebar"):

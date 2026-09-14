@@ -291,6 +291,39 @@ def draw_overlay_hud(context) -> None:
             user_text_y -= 16.0
         content_y = user_y + user_h + 8.0
 
+    # FIFO user prompts waiting behind the active turn. This is deliberately
+    # separate from the active user card and the agent's task checklist.
+    queued_prompts = list(getattr(overlay_state, "queued_prompts", []))
+    if queued_prompts:
+        shown = queued_prompts[:6]
+        queue_h = 42.0 + len(shown) * 18.0
+        queue_x = bar_x
+        queue_y = content_y
+        draw_rounded_shadow(queue_x, queue_y, bar_w, queue_h, 14.0, shadow_size=10.0)
+        draw_rounded_rect(queue_x, queue_y, bar_w, queue_h, 14.0, (0.07, 0.08, 0.10, 0.96))
+        draw_text(
+            f"Queued · {len(queued_prompts)} waiting",
+            queue_x + 16.0,
+            queue_y + queue_h - 22.0,
+            size=11,
+            color=(0.82, 0.86, 0.92, 1.0),
+        )
+        queue_line_y = queue_y + queue_h - 40.0
+        for item in shown:
+            label = str(item.get("prompt", "Queued prompt")).replace("\n", " ")[:88]
+            draw_text("○", queue_x + 16.0, queue_line_y, size=11, color=(0.55, 0.6, 0.68, 1.0))
+            draw_text(label, queue_x + 34.0, queue_line_y, size=10, color=(0.82, 0.84, 0.88, 1.0))
+            queue_line_y -= 18.0
+        if len(queued_prompts) > len(shown):
+            draw_text(
+                f"+ {len(queued_prompts) - len(shown)} more",
+                queue_x + 34.0,
+                queue_line_y,
+                size=10,
+                color=(0.6, 0.65, 0.7, 1.0),
+            )
+        content_y = queue_y + queue_h + 8.0
+
     # OpenCode-style task checklist.  This is deliberately separate from the
     # approval card: approval answers "may I run it?", while this answers
     # "what happened to each step?".

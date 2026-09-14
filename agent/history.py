@@ -93,6 +93,17 @@ class RuntimeHistory:
             return self._items[index]
         return None
 
+    def update(self, item_id: str, **changes: Any) -> Optional[HistoryItem]:
+        """Update mutable display fields of an existing history item."""
+        item = self.get_by_id(item_id)
+        if item is None:
+            return None
+        allowed = {"turn_id", "kind", "title", "status", "summary", "detail"}
+        for key, value in changes.items():
+            if key in allowed:
+                setattr(item, key, value)
+        return item
+
     @property
     def items(self) -> List[HistoryItem]:
         """Get a copy of all recorded history items."""

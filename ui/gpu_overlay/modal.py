@@ -124,6 +124,14 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                         overlay_state.task_plan = task_plan
                         state_changed = True
 
+                    queued_prompts = [
+                        {"queue_id": item.queue_id, "prompt": item.prompt}
+                        for item in getattr(runtime, "queued_prompts", [])
+                    ]
+                    if overlay_state.queued_prompts != queued_prompts:
+                        overlay_state.queued_prompts = queued_prompts
+                        state_changed = True
+
                     # Sync pending approval (plan review takes precedence as batch card)
                     plan_review = getattr(runtime, "pending_plan_review", None)
                     if plan_review is not None:
@@ -332,7 +340,11 @@ class AISIDEBAR_OT_viewport_hud(Operator):
                 # Keep the submitted user turn visible after the input buffer
                 # is cleared, so a failed/slow request is not mistaken for a
                 # click that never reached the runtime.
-                overlay_state.last_prompt_text = prompt
+                # Keep the active turn's user card stable. A prompt submitted
+                # while another turn is running appears in the separate FIFO
+                # queue card instead of replacing the active card.
+                if runtime.current_turn_id is None:
+                    overlay_state.last_prompt_text = prompt
                 overlay_state.reset_input()
                 overlay_state.is_processing = True
                 overlay_state.status_text = "PROCESSING"

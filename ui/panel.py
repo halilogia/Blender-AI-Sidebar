@@ -5,7 +5,7 @@ from bpy.types import Panel
 
 
 class AISIDEBAR_PT_main_panel(Panel):
-    """Minimal launcher & status card located in the 3D Viewport Sidebar (N-Panel)."""
+    """Launcher, live status, and ordered conversation timeline."""
 
     bl_label = "Blender AI Copilot"
     bl_idname = "AISIDEBAR_PT_main_panel"
@@ -49,6 +49,60 @@ class AISIDEBAR_PT_main_panel(Panel):
             box.label(text="AI: Error encountered", icon="ERROR")
         else:
             box.label(text=f"Status: {status}", icon="INFO")
+
+        # ---------------------------------------------------------------------
+        # 3. Ordered conversation / prompt queue
+        # ---------------------------------------------------------------------
+        history = list(getattr(props, "history", []))
+        conversation_box = layout.box()
+        header = conversation_box.row(align=True)
+        header.label(text=f"Conversation ({len(history)})", icon="TEXT")
+        queued_count = int(getattr(props, "queued_count", 0))
+        if queued_count:
+            header.label(text=f"{queued_count} queued", icon="TIME")
+
+        if not history:
+            conversation_box.label(text="No messages yet.", icon="INFO")
+        else:
+            # RuntimeHistory is chronological. Showing the newest entries in
+            # this order makes queued prompts visible without hiding their
+            # position in the conversation.
+            for item in history[-12:]:
+                row = conversation_box.row(align=True)
+                row.label(text=_status_marker(item.status), icon="DOT")
+                row.label(text=_clip(item.title, 58))
+                summary = _clip(item.summary, 88)
+                if summary and summary != item.title:
+                    detail_row = conversation_box.row()
+                    detail_row.label(text=f"  {summary}")
+
+        if status == "PENDING_APPROVAL":
+            approval_row = conversation_box.row(align=True)
+            approval_row.operator("ai_sidebar.approve_action", text="Approve", icon="CHECKMARK")
+            approval_row.operator("ai_sidebar.reject_action", text="Reject", icon="X")
+        if history:
+            conversation_box.operator("ai_sidebar.clear_history", text="Clear Conversation", icon="TRASH")
+
+
+def _clip(value, limit):
+    """Keep N-panel rows readable while retaining full text in the HUD."""
+    text = str(value or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
+
+
+def _status_marker(status):
+    return {
+        "QUEUED": "○",
+        "RUNNING": "●",
+        "PROCESSING": "●",
+        "PENDING": "◌",
+        "OK": "✓",
+        "SENT": "✓",
+        "COMPLETED": "✓",
+        "ERROR": "✕",
+        "FAILED": "✕",
+        "CANCELLED": "—",
+    }.get(str(status or "").upper(), "·")
 
 
 CLASSES = (
