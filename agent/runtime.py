@@ -106,6 +106,7 @@ class AgentRuntime:
         policy: Optional[ApprovalPolicy] = None,
         verifier: Optional[Union[ChangeVerifier, bool]] = None,
         visual_verifier: Optional[VisualVerifier] = None,
+        max_plan_repairs: int = 1,
     ):
         self.provider = provider
         self.dispatcher = dispatcher
@@ -136,7 +137,9 @@ class AgentRuntime:
         # Session Conversation & multi-round loop guard
         self.conversation = Conversation()
         self.max_tool_rounds: int = max_tool_rounds
+        self.max_plan_repairs: int = max_plan_repairs
         self._current_tool_round: int = 0
+        self._current_plan_repairs: int = 0
         self._streaming_text: str = ""
 
         # Main-thread owned session state
@@ -155,13 +158,18 @@ class AgentRuntime:
 
     @property
     def pending_approval(self) -> Optional[PendingApproval]:
-        """Get the active PendingApproval awaiting user decision, if any."""
+        """Get the active PendingApproval awaiting confirmation, if any."""
         return self._pending_approval
 
     @property
     def pending_plan_review(self):
         """Get the active PlanReview awaiting batch approval, if any."""
         return self._pending_plan_review
+
+    @property
+    def current_plan_repairs(self) -> int:
+        """Get the count of plan repair attempts in the active turn."""
+        return self._current_plan_repairs
 
     @property
     def current_state(self) -> AgentState:
@@ -315,6 +323,20 @@ class AgentRuntime:
             visual_expectations=visual_expectations,
         )
         return executor.execute_plan(raw_plan)
+
+    def _is_repair_proposal(self) -> bool:
+        """Determine whether the next propose_plan is a repair attempt for a failed plan.
+
+        Deterministic and grounded in execution truth: Returns True if any prior
+        propose_plan in the current turn failed during execution (PLAN_EXECUTION_FAILED).
+        """
+        return any(
+            tr.tool == "propose_plan"
+            and not tr.success
+            and tr.error is not None
+            and tr.error.type == "PLAN_EXECUTION_FAILED"
+            for tr in self._current_tool_results
+        )
 
     def request_plan_review(self, raw_plan: Any, call_id: str = "") -> Any:
         """Validate plan and create single batch-approval review point. No step executes."""
@@ -760,6 +782,7 @@ class AgentRuntime:
         self._pending_approval = None
         self._pending_plan_review = None
         self._current_tool_round = 0
+        self._current_plan_repairs = 0
         self._streaming_text = ""
         return True
 
@@ -770,6 +793,7 @@ class AgentRuntime:
         self._turn_counter = 0
         self._current_turn_id = None
         self._current_tool_round = 0
+        self._current_plan_repairs = 0
         self._streaming_text = ""
         self._current_tool_results = []
         self._pending_approval = None
@@ -806,6 +830,7 @@ class AgentRuntime:
         self._expected_visual_description = expected_visual_description
         self._current_tool_results = []
         self._current_tool_round = 0
+        self._current_plan_repairs = 0
         self._streaming_text = ""
         self._current_cancel_event = threading.Event()
         self._current_metrics = TurnMetrics(turn_id=turn_id, t_submitted=time.time())
@@ -1063,6 +1088,67 @@ class AgentRuntime:
                     return None
 
                 if tool_call.tool_name == "propose_plan":
+                    if self._is_repair_proposal():
+                        if self._current_plan_repairs >= self.max_plan_repairs:
+                            self.state_machine.transition_to(AgentState.ERROR)
+                            if self._current_metrics:
+                                self._current_metrics.t_completed = time.time()
+
+                            err_msg = f"Maximum plan repairs limit reached ({self.max_plan_repairs})."
+                            err_content = json.dumps(
+                                {"error": err_msg, "type": "MAX_PLAN_REPAIRS_EXCEEDED"},
+                                ensure_ascii=False,
+                            )
+                            self.conversation.add_message(
+                                ChatMessage(
+                                    role=Role.TOOL,
+                                    content=err_content,
+                                    tool_call_id=tool_call.call_id,
+                                    name="propose_plan",
+                                )
+                            )
+                            tool_res = ToolResult.fail(
+                                tool="propose_plan",
+                                error_type="MAX_PLAN_REPAIRS_EXCEEDED",
+                                message=err_msg,
+                                details={
+                                    "max_plan_repairs": self.max_plan_repairs,
+                                    "current_plan_repairs": self._current_plan_repairs,
+                                },
+                            )
+                            self._current_tool_results.append(tool_res)
+
+                            error_result = AgentResult(
+                                final_text=f"Error: {err_msg}",
+                                tool_results=list(self._current_tool_results),
+                                state=AgentState.ERROR.value,
+                            )
+                            self._last_result = error_result
+                            self.history.add(
+                                item_id=f"{event.turn_id}_error",
+                                turn_id=event.turn_id,
+                                kind=HistoryKind.ERROR,
+                                title="Error: MAX_PLAN_REPAIRS_EXCEEDED",
+                                status="ERROR",
+                                summary=err_msg,
+                                detail=f"Plan repair limit reached: {err_msg}",
+                            )
+                            self.event_queue.put(
+                                AgentErrorEvent(
+                                    error_type="MAX_PLAN_REPAIRS_EXCEEDED",
+                                    message=err_msg,
+                                    turn_id=event.turn_id,
+                                    details={
+                                        "max_plan_repairs": self.max_plan_repairs,
+                                        "current_plan_repairs": self._current_plan_repairs,
+                                    },
+                                )
+                            )
+                            self._current_turn_id = None
+                            return error_result
+
+                        self._current_plan_repairs += 1
+
                     args = dict(tool_call.arguments or {})
                     args.pop("overall_risk", None)
                     review = self.request_plan_review(args, call_id=tool_call.call_id)
@@ -1277,6 +1363,7 @@ class AgentRuntime:
         """Cancel the currently active turn, discarding pending events and approvals."""
         self._pending_approval = None
         self._pending_plan_review = None
+        self._current_plan_repairs = 0
         if self._current_turn_id is not None:
             if self._current_cancel_event:
                 self._current_cancel_event.set()
@@ -1597,6 +1684,7 @@ class AgentRuntime:
         self.conversation.clear()
         self._current_prompt = ""
         self._expected_visual_description = None
+        self._current_plan_repairs = 0
 
     def shutdown(self) -> None:
         """Gracefully terminate background workers and queue."""

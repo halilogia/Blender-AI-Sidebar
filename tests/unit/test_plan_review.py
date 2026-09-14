@@ -267,6 +267,180 @@ class TestPlanReview(unittest.TestCase):
             rt2.reject_plan(aid2)
 
 
+class TestPlanRepairBudget(unittest.TestCase):
+    def test_new_turn_counter_zero(self):
+        rt, _ = _runtime()
+        self.assertEqual(rt.current_plan_repairs, 0)
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+    def test_successful_first_plan_does_not_increment_repairs(self):
+        rt, ad = _runtime()
+        _submit_plan(rt)
+        aid = rt.pending_plan_review.approval_id
+        rt.approve_plan(aid)
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+    def test_first_plan_failed_allows_one_repair(self):
+        rt, ad = _runtime()
+        from core.types import ToolResult
+        ad.create_primitive.return_value = ToolResult.fail(
+            tool="create_primitive",
+            error_type="BLENDER_FAIL",
+            message="Cannot create primitive",
+        )
+        _submit_plan(rt)
+        aid = rt.pending_plan_review.approval_id
+        summary = rt.approve_plan(aid)
+        self.assertEqual(summary.status.value, "FAILED")
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+        # Propose repair plan (uses call_id="c2")
+        resp = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c2", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        rt.process_event(ProviderResponseReadyEvent(response=resp, turn_id=rt.current_turn_id))
+
+        # Repair plan is created and requires approval (no bypass!)
+        from agent.state_machine import AgentState
+        self.assertIsNotNone(rt.pending_plan_review)
+        self.assertEqual(rt.current_state, AgentState.PENDING_APPROVAL)
+        self.assertEqual(rt.pending_plan_review.call_id, "c2")
+        # Repair counter is now 1
+        self.assertEqual(rt._current_plan_repairs, 1)
+
+    def test_repair_plan_failed_blocks_further_repairs_with_max_repairs_exceeded(self):
+        rt, ad = _runtime()
+        from core.types import ToolResult
+        from agent.state_machine import AgentState
+
+        # Step 1: Initial plan fails
+        ad.create_primitive.return_value = ToolResult.fail(
+            tool="create_primitive",
+            error_type="BLENDER_FAIL",
+            message="Cannot create primitive",
+        )
+        _submit_plan(rt)
+        aid1 = rt.pending_plan_review.approval_id
+        rt.approve_plan(aid1)
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+        # Step 2: Propose repair plan 1
+        resp2 = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c2", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        rt.process_event(ProviderResponseReadyEvent(response=resp2, turn_id=rt.current_turn_id))
+        self.assertEqual(rt._current_plan_repairs, 1)
+        self.assertIsNotNone(rt.pending_plan_review)
+
+        # Step 3: Repair plan 1 also fails
+        aid2 = rt.pending_plan_review.approval_id
+        rt.approve_plan(aid2)
+        self.assertEqual(rt._current_plan_repairs, 1)
+
+        # Step 4: LLM attempts to propose repair plan 2 (exceeding max_plan_repairs=1)
+        resp3 = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c3", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        err_res = rt.process_event(ProviderResponseReadyEvent(response=resp3, turn_id=rt.current_turn_id))
+
+        # Verification:
+        # Error result produced
+        self.assertIsNotNone(err_res)
+        self.assertEqual(err_res.state, AgentState.ERROR.value)
+        self.assertIn("Maximum plan repairs limit reached", err_res.final_text)
+
+        # State is ERROR
+        self.assertEqual(rt.current_state, AgentState.ERROR)
+        self.assertIsNone(rt.pending_plan_review)
+
+        # Event queue has AgentErrorEvent with MAX_PLAN_REPAIRS_EXCEEDED
+        queued = rt.event_queue.drain_batch(max_items=50, max_time_sec=0.05)
+        err_events = [e for e in queued if getattr(e, "error_type", None) == "MAX_PLAN_REPAIRS_EXCEEDED"]
+        self.assertTrue(len(err_events) >= 1)
+
+        # Conversation sequence integrity is preserved
+        rt.conversation.validate_sequence()
+
+        # Last tool message carries MAX_PLAN_REPAIRS_EXCEEDED
+        last_msg = rt.conversation.last()
+        self.assertEqual(last_msg.role.value, "tool")
+        self.assertEqual(last_msg.tool_call_id, "c3")
+        self.assertIn("MAX_PLAN_REPAIRS_EXCEEDED", last_msg.content)
+
+    def test_new_user_turn_resets_repair_counter(self):
+        rt, ad = _runtime()
+        from core.types import ToolResult
+
+        # Turn 1: Initial plan fails and repair plan 1 is proposed (counter becomes 1)
+        ad.create_primitive.return_value = ToolResult.fail(
+            tool="create_primitive",
+            error_type="BLENDER_FAIL",
+            message="Fail",
+        )
+        _submit_plan(rt)
+        aid1 = rt.pending_plan_review.approval_id
+        rt.approve_plan(aid1)
+
+        resp2 = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c2", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        rt.process_event(ProviderResponseReadyEvent(response=resp2, turn_id=rt.current_turn_id))
+        self.assertEqual(rt._current_plan_repairs, 1)
+
+        # Turn 2: User submits a new prompt after cancelling or resetting
+        rt.cancel_current_turn()
+        self.assertEqual(rt._current_plan_repairs, 0)
+        rt.submit_prompt("brand new task")
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+    def test_max_tool_rounds_takes_precedence_or_harmonizes(self):
+        rt, ad = _runtime()
+        rt.max_tool_rounds = 1  # only 1 tool round allowed
+        # First round uses tool round 1
+        _submit_plan(rt)
+        aid = rt.pending_plan_review.approval_id
+        from core.types import ToolResult
+        ad.create_primitive.return_value = ToolResult.fail(tool="create_primitive", error_type="E", message="M")
+        rt.approve_plan(aid)
+
+        # When worker/LLM tries round 2, max_tool_rounds trips
+        resp2 = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c2", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        err = rt.process_event(ProviderResponseReadyEvent(response=resp2, turn_id=rt.current_turn_id))
+        self.assertIsNotNone(err)
+        self.assertIn("Maximum tool rounds limit reached", err.final_text)
+
+    def test_stale_and_cancelled_turn_isolation(self):
+        rt, _ = _runtime()
+        _submit_plan(rt)
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+        # Stale event with wrong turn_id has no effect
+        resp_stale = ProviderResponse(
+            assistant_text=None,
+            tool_calls=[ToolCall(call_id="c_stale", tool_name="propose_plan", arguments=_plan())],
+            is_final=False,
+        )
+        rt.process_event(ProviderResponseReadyEvent(response=resp_stale, turn_id="turn_wrong"))
+        self.assertEqual(rt._current_plan_repairs, 0)
+        self.assertEqual(rt.stale_events_count, 1)
+
+        # Cancel turn resets counter
+        rt.cancel_current_turn()
+        self.assertEqual(rt._current_plan_repairs, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 
