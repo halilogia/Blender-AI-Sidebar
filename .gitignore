@@ -58,3 +58,7 @@ config.json
 .env
 
 archives/
+
+# Local diagnostic output (may contain prompts and provider error details)
+logs/
+*.log

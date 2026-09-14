@@ -17,6 +17,7 @@ from core.config import (
     mask_api_key,
     save_config,
 )
+from core.logging_utils import LOG_FILENAME, get_log_path
 
 
 class TestConfig(unittest.TestCase):
@@ -25,12 +26,12 @@ class TestConfig(unittest.TestCase):
         self.config_path = Path(self.temp_dir.name) / "config.json"
         # Clean up relevant env vars
         self.old_env = {}
-        for var in ["BLENDER_AI_API_KEY", "BLENDER_AI_BASE_URL", "BLENDER_AI_MODEL", "BLENDER_AI_TIMEOUT", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
+        for var in ["BLENDER_AI_API_KEY", "BLENDER_AI_BASE_URL", "BLENDER_AI_MODEL", "BLENDER_AI_TIMEOUT", "BLENDER_AI_LOG_DIR", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
             if var in os.environ:
                 self.old_env[var] = os.environ.pop(var)
 
     def tearDown(self):
-        for var in ["BLENDER_AI_API_KEY", "BLENDER_AI_BASE_URL", "BLENDER_AI_MODEL", "BLENDER_AI_TIMEOUT", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
+        for var in ["BLENDER_AI_API_KEY", "BLENDER_AI_BASE_URL", "BLENDER_AI_MODEL", "BLENDER_AI_TIMEOUT", "BLENDER_AI_LOG_DIR", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
             if var in os.environ:
                 del os.environ[var]
         os.environ.update(self.old_env)
@@ -42,6 +43,13 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.model, DEFAULT_MODEL)
         self.assertEqual(cfg.api_key, "")
         self.assertEqual(cfg.timeout_seconds, DEFAULT_TIMEOUT_SECONDS)
+
+    def test_log_directory_override_is_opt_in(self):
+        self.assertEqual(Path(get_log_path()).parent, Path(tempfile.gettempdir()))
+        project_log_dir = Path(self.temp_dir.name) / "logs"
+        os.environ["BLENDER_AI_LOG_DIR"] = str(project_log_dir)
+        self.assertEqual(Path(get_log_path()), project_log_dir / LOG_FILENAME)
+        self.assertTrue(project_log_dir.is_dir())
 
     def test_save_and_load_config(self):
         cfg = Config(

@@ -221,9 +221,14 @@ Blender AI Sidebar/
 ## Running Tests
 
 ### 1. Pure Python Unit Tests (Fast, No Blender Required)
-Runs all 252 unit tests covering SSE parsing, HTTP client, request mapping, tool accumulation, state transitions, loop limits, approval policies, and provider round-trips:
+Runs the complete pure-Python unit suite:
 ```bash
 python tests/run_unit_tests.py
+```
+
+For a focused change, pass a test module or file and avoid waiting for the full suite:
+```bash
+python tests/run_unit_tests.py tests.unit.test_prompt_queue tests.unit.test_hardening
 ```
 
 ### 2. Headless Blender Integration Tests
@@ -237,6 +242,22 @@ Test your active local 9Router or OpenAI-compatible server:
 ```bash
 python tests/manual/test_live_openai_endpoint.py
 ```
+
+### 4. Diagnostics
+
+The add-on writes a rotating diagnostic log to the operating system's temporary
+directory by default. The N-Panel **Diagnostics** section shows the active path
+and can copy it to the clipboard.
+
+For local development, opt into a project-local directory without changing
+the installed add-on default:
+
+```powershell
+$env:BLENDER_AI_LOG_DIR = ".\\logs"
+```
+
+The `logs/` directory and `*.log` files are excluded from Git because logs may
+contain prompts and provider error details.
 
 ---
 

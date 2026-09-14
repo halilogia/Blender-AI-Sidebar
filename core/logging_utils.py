@@ -5,17 +5,44 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 
 LOGGER_NAME = "blender_ai_sidebar"
 LOG_FILENAME = "blender_ai_sidebar.log"
+LOG_DIR_ENV = "BLENDER_AI_LOG_DIR"
+
+
+def get_log_directory() -> str:
+    """Return a writable log directory, honoring the optional dev override.
+
+    The project directory is intentionally opt-in through
+    ``BLENDER_AI_LOG_DIR``. This prevents an installed extension from trying
+    to write beside itself and prevents diagnostic logs from silently entering
+    a Git repository.
+    """
+    requested = os.environ.get(LOG_DIR_ENV, "").strip()
+    if requested:
+        candidate = Path(os.path.expandvars(os.path.expanduser(requested)))
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return str(candidate)
+        except (OSError, ValueError):
+            # Fall back to the OS temp directory when the override is stale,
+            # read-only, or malformed.
+            pass
+    return tempfile.gettempdir()
 
 
 def get_log_path() -> str:
-    """Return the user-local diagnostic log path."""
-    return os.path.join(tempfile.gettempdir(), LOG_FILENAME)
+    """Return the diagnostic log path.
+
+    Development example (PowerShell):
+        ``$env:BLENDER_AI_LOG_DIR = '.\\logs'``
+    """
+    return os.path.join(get_log_directory(), LOG_FILENAME)
 
 
 def get_logger(component: Optional[str] = None) -> logging.Logger:
