@@ -24,6 +24,7 @@ from adapter.readers.viewport_reader import ViewportReader
 from adapter.mutators import (
     PrimitiveMutator,
     InvalidPrimitiveTypeError,
+    CameraMutator,
     TransformMutator,
     DeleteMutator,
     MaterialMutator,
@@ -278,6 +279,47 @@ class BlenderAdapter:
                 message=f"Unexpected error creating primitive '{primitive_type}': {str(exc)}",
                 details={"exception": type(exc).__name__},
             )
+
+    def create_camera(
+        self,
+        name: Optional[str] = None,
+        location: Optional[Any] = None,
+        rotation: Optional[Any] = None,
+        lens: Optional[float] = None,
+        make_active: bool = True,
+    ) -> ToolResult:
+        """Create a new camera or modify an existing camera in the scene.
+
+        Returns:
+            ToolResult conforming to create_camera contract.
+        """
+        assert_main_thread()
+        tool_name = "create_camera"
+
+        try:
+            data = CameraMutator.create_or_modify(
+                name=name,
+                location=location,
+                rotation=rotation,
+                lens=lens,
+                make_active=make_active,
+            )
+            return ToolResult.ok(tool_name, data)
+        except ValueError as val_err:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="INVALID_ARGUMENT",
+                message=str(val_err),
+                details={"error": str(val_err)},
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                tool=tool_name,
+                error_type="ADAPTER_INTERNAL_ERROR",
+                message=f"Unexpected error creating/modifying camera: {str(exc)}",
+                details={"exception": type(exc).__name__},
+            )
+
 
     def transform_object(
         self,

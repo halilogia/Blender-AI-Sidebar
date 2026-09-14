@@ -125,6 +125,10 @@ class ApprovalPolicy:
             prim_type = args.get("primitive_type", "object").capitalize()
             return f"Create {prim_type}"
 
+        if tool_name == "create_camera":
+            cam_name = args.get("name", "").strip()
+            return f'Create camera "{cam_name}"' if cam_name else "Create camera"
+
         if tool_name == "transform_object":
             obj_name = args.get("name", "").strip()
             return f'Transform "{obj_name}"' if obj_name else "Transform object"

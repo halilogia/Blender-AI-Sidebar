@@ -42,6 +42,8 @@ class ChangeVerifier:
 
         if op == "create":
             return self._verify_create(target, change_set)
+        elif op == "create_camera":
+            return self._verify_create_camera(target, change_set)
         elif op == "transform":
             return self._verify_transform(target, change_set)
         elif op == "delete":
@@ -58,7 +60,7 @@ class ChangeVerifier:
                 mismatches=[
                     {
                         "property": "operation",
-                        "expected": "One of ['create', 'transform', 'delete', 'set_material', 'assign_material']",
+                        "expected": "One of ['create', 'create_camera', 'transform', 'delete', 'set_material', 'assign_material']",
                         "actual": op,
                         "diff": None,
                     }
@@ -214,6 +216,89 @@ class ChangeVerifier:
                         mismatches.append(mismatch)
 
         return self._build_result("create", target, mismatches)
+
+    def _verify_create_camera(self, target: str, change_set: ChangeSet) -> VerificationResult:
+        """Verification rules for camera creation or modification."""
+        mismatches: List[Dict[str, Any]] = []
+        expected = change_set.expected_after or {}
+        actual = change_set.actual_after or {}
+
+        # 1. Existence check
+        if not actual.get("exists", False):
+            mismatches.append(
+                {
+                    "property": "exists",
+                    "expected": True,
+                    "actual": False,
+                    "diff": None,
+                }
+            )
+            return self._build_result("create_camera", target, mismatches)
+
+        # 2. Type check
+        expected_type = expected.get("type", "CAMERA")
+        actual_type = actual.get("type")
+        if actual_type != expected_type:
+            mismatches.append(
+                {
+                    "property": "type",
+                    "expected": expected_type,
+                    "actual": actual_type,
+                    "diff": None,
+                }
+            )
+
+        # 3. Numeric vectors: location, rotation
+        for prop in ("location", "rotation"):
+            if prop in expected and expected[prop] is not None:
+                if prop not in actual or actual[prop] is None:
+                    mismatches.append(
+                        {
+                            "property": prop,
+                            "expected": expected[prop],
+                            "actual": None,
+                            "diff": None,
+                        }
+                    )
+                else:
+                    mismatch = self._compare_numeric_vector(
+                        prop,
+                        expected[prop],
+                        actual[prop],
+                        is_rotation=(prop == "rotation"),
+                    )
+                    if mismatch:
+                        mismatches.append(mismatch)
+
+        # 4. Lens check
+        if "lens" in expected and expected["lens"] is not None:
+            expected_lens = float(expected["lens"])
+            actual_lens = float(actual.get("lens", 0.0))
+            if abs(actual_lens - expected_lens) > self.epsilon:
+                mismatches.append(
+                    {
+                        "property": "lens",
+                        "expected": round(expected_lens, 2),
+                        "actual": round(actual_lens, 2),
+                        "diff": round(actual_lens - expected_lens, 4),
+                    }
+                )
+
+        # 5. Active camera check
+        if "is_active_camera" in expected and expected["is_active_camera"] is not None:
+            expected_active = bool(expected["is_active_camera"])
+            actual_active = bool(actual.get("is_active_camera", False))
+            if actual_active != expected_active:
+                mismatches.append(
+                    {
+                        "property": "is_active_camera",
+                        "expected": expected_active,
+                        "actual": actual_active,
+                        "diff": None,
+                    }
+                )
+
+        return self._build_result("create_camera", target, mismatches)
 
     def _verify_transform(self, target: str, change_set: ChangeSet) -> VerificationResult:
         """Verification rules for object transformation."""
@@ -533,6 +618,34 @@ def build_change_set_from_result(
             operation="create",
             target_name=target_name,
             before=None,
+            expected_after=expected_after,
+            actual_after=dict(result_data),
+        )
+
+    elif name == "create_camera":
+        target_name = str(
+            result_data.get("object_name")
+            or arguments.get("name")
+            or "Camera"
+        )
+        expected_after: Dict[str, Any] = {
+            "exists": True,
+            "type": "CAMERA",
+        }
+        for prop in ("location", "rotation"):
+            if prop in arguments and arguments[prop] is not None:
+                expected_after[prop] = arguments[prop]
+        if "lens" in arguments and arguments["lens"] is not None:
+            expected_after["lens"] = float(arguments["lens"])
+        if "make_active" in arguments and arguments["make_active"] is not None:
+            expected_after["is_active_camera"] = bool(arguments["make_active"])
+        elif arguments.get("make_active") is None:
+            expected_after["is_active_camera"] = True
+
+        return ChangeSet(
+            operation="create_camera",
+            target_name=target_name,
+            before=result_data.get("before"),
             expected_after=expected_after,
             actual_after=dict(result_data),
         )
