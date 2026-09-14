@@ -606,6 +606,59 @@ class TestAgentRuntimeProviderRoundTrip(unittest.TestCase):
         self.assertEqual(len(result.tool_results), 1)
         self.assertTrue(result.tool_results[0].success)
 
+    # -------------------------------------------------------------------------
+    # 10. Regression Test (M10 Task 1C): Tool calls dispatched even if finish_reason=='stop'
+    # -------------------------------------------------------------------------
+    def test_tool_call_dispatched_even_when_finish_reason_is_stop(self):
+        """Valid tool calls must be dispatched and executed even when the provider emits finish_reason='stop'."""
+        call_count = 0
+
+        def stop_with_tool_call_responder(req_data, handler):
+            nonlocal call_count
+            call_count += 1
+            messages = req_data.get("messages", [])
+            last_msg = messages[-1] if messages else {}
+
+            if last_msg.get("role") == "user":
+                # First response: LLM sends tool_call, BUT with finish_reason="stop" (common in local models/Ollama)
+                tc_chunk = {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_stop_1",
+                                        "type": "function",
+                                        "function": {"name": "inspect_scene", "arguments": "{}"},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+                finish_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                handler._send_sse([json.dumps(tc_chunk), json.dumps(finish_chunk), "[DONE]"])
+            elif last_msg.get("role") == "tool":
+                # Second response: LLM receives tool result and produces final synthesis
+                text_chunk = {"choices": [{"index": 0, "delta": {"content": "Sahne incelendi."}}]}
+                finish_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                handler._send_sse([json.dumps(text_chunk), json.dumps(finish_chunk), "[DONE]"])
+
+        FakeOpenAIServerHandler.custom_responder = stop_with_tool_call_responder
+
+        turn_id = self.runtime.submit_prompt("Sahne kontrolü")
+        result = self._drain_and_process()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.state, "IDLE")
+        self.assertEqual(len(result.tool_results), 1)
+        self.assertEqual(result.tool_results[0].tool, "inspect_scene")
+        self.assertTrue(result.tool_results[0].success)
+        self.assertIn("Sahne incelendi.", result.final_text)
+        self.assertEqual(call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -536,7 +536,7 @@ class OpenAICompatibleProvider:
                 return
 
         # 9. Yield final completion event
-        effective_finish = finish_reason or ("tool_calls" if self.last_tool_calls else "stop")
+        effective_finish = "tool_calls" if self.last_tool_calls else (finish_reason or "stop")
         yield ProviderCompleted(
             turn_id=turn_id,
             finish_reason=effective_finish,

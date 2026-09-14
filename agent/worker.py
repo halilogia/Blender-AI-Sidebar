@@ -165,7 +165,7 @@ class AgentWorker:
                                 break
 
                             tool_calls = list(getattr(self.provider, "last_tool_calls", []))
-                            is_final = (stream_ev.finish_reason == "stop" or not tool_calls)
+                            is_final = not bool(tool_calls)
                             response = ProviderResponse(
                                 assistant_text=streamed_text if streamed_text else None,
                                 tool_calls=tool_calls,

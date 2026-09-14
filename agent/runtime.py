@@ -973,7 +973,7 @@ class AgentRuntime:
         # 5. Handle direct ProviderCompleted stream event (normalize into ProviderResponseReadyEvent)
         if isinstance(event, ProviderCompleted):
             tool_calls = list(getattr(self.provider, "last_tool_calls", []))
-            is_final = (event.finish_reason == "stop" or not tool_calls)
+            is_final = not bool(tool_calls)
             resp = ProviderResponse(
                 assistant_text=self._streaming_text if self._streaming_text else None,
                 tool_calls=tool_calls,
@@ -987,7 +987,7 @@ class AgentRuntime:
                 return None
 
             resp = event.response
-            if resp is None or resp.is_final or not resp.tool_calls:
+            if resp is None or not resp.tool_calls:
                 # Turn finished without tool calls (or final synthesis completed)
                 self.state_machine.transition_to(AgentState.IDLE)
                 if self._current_metrics:
